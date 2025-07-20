@@ -1,0 +1,15 @@
+{
+  "cookies": {
+    "appmsg_token": "YOUR_APPMSG_TOKEN_HERE",
+    "wxuin": "YOUR_WXUIN_HERE",
+    "pass_ticket": "YOUR_PASS_TICKET_HERE",
+    "wxtoken": "YOUR_WXTOKEN_HERE"
+  },
+  "instructions": [
+    "1. 在微信中打开任意公众号文章",
+    "2. 使用抓包工具获取请求信息",
+    "3. 将获取到的值填入上面的cookies中",
+    "4. 保存文件为 wechat_config.json",
+    "5. 运行脚本获取统计数据"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "cookies": {
+    "appmsg_token": "1331_4fvjXxGVIDH33fxCro-gyRsoQMrDKXckLtM32Dj68Qh2NQpNSZj0BzZfYvsgFmopcm0HWR1g3P34Z7_Q",
+    "wxuin": "ODQxMTI4MjQx",
+    "pass_ticket": "b8Xk5iNZRmx1Oh8e3LJE93sE9jXwjiIFlgCsdESCpIwANhwLsqILqQ1LUflREMzj",
+    "wxtoken": "777"
+  },
+  "request_params": {
+    "key": "daf9bdc5abc4e8d0b1d9d20196e62a3f4fc920c2db6d70b1b503a34e8d0c0e4141d689b8dda8cb50c46bc0f7ee2f1d901b0b18b0ed78467e376ccddcb2f85df85083e564cee48120d2b49e9eeac5ba450c12faf11e0893998c80c0a1b19bab446d640ae305178807bc3fb823136f315a2f541fa5b894cffa94ac4fcc5a594df3",
+    "devicetype": "iMac&nbsp;MacBookPro18,2&nbsp;OSX&nbsp;OSX&nbsp;15.5&nbsp;build(24F74)",
+    "clientversion": "13080010",
+    "version": "13080010",
+    "__biz": "MzI4MTI3MzgxNA==",
+    "x5": "0"
+  },
+  "config_info": {
+    "created_at": "2025-07-20",
+    "token_expires_in": "2小时",
+    "note": "从getappmsgext URL自动解析生成"
+  }
+}
