@@ -1,6 +1,7 @@
 import json
 import time
 import re
+import os
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
@@ -120,25 +121,25 @@ def show_time_range_menu():
     print("0. 退出程序")
     print("="*50)
 
-def fetch_article_content(url, retry_count=3):
+def fetch_article_content(url, retry_count=5):
     """抓取单篇文章的详细信息，支持重试"""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         
         # 设置更长的超时时间
-        page.set_default_timeout(30000)
+        page.set_default_timeout(45000)
         
         for attempt in range(retry_count):
             try:
                 print(f"    尝试第 {attempt + 1} 次访问...")
-                page.goto(url, timeout=30000)
+                page.goto(url, timeout=45000)
                 
                 # 等待页面基本加载完成
-                page.wait_for_load_state('domcontentloaded', timeout=15000)
+                page.wait_for_load_state('domcontentloaded', timeout=20000)
                 
                 # 额外等待一下，确保内容加载
-                page.wait_for_timeout(3000)
+                page.wait_for_timeout(5000)
                 
                 # 提取文章信息
                 article_data = {
@@ -226,14 +227,42 @@ def fetch_article_content(url, retry_count=3):
                 except:
                     pass
                 
-                browser.close()
-                return article_data
+                # 检查是否成功抓取到有效内容
+                if article_data.get('title') and len(article_data.get('title', '').strip()) > 0:
+                    browser.close()
+                    return article_data
+                else:
+                    # 如果没有抓取到标题，继续重试
+                    raise Exception("未抓取到文章标题，可能页面未完全加载")
                 
             except Exception as e:
                 print(f"    第 {attempt + 1} 次尝试失败: {e}")
                 if attempt < retry_count - 1:
-                    print(f"    等待 5 秒后重试...")
-                    time.sleep(5)
+                    # 递增等待时间，避免频繁请求
+                    wait_time = (attempt + 1) * 3
+                    print(f"    等待 {wait_time} 秒后重试...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"    所有重试都失败了")
+                    browser.close()
+                    return {
+                        'url': url,
+                        'title': '',
+                        'author': '',
+                        'publish_time': '',
+                        'read_count': '',
+                        'like_count': '',
+                        'content': '',
+                        'error': f"重试 {retry_count} 次后仍然失败: {str(e)}"
+                    }
+                
+            except Exception as e:
+                print(f"    第 {attempt + 1} 次尝试失败: {e}")
+                if attempt < retry_count - 1:
+                    # 递增等待时间，避免频繁请求
+                    wait_time = (attempt + 1) * 3
+                    print(f"    等待 {wait_time} 秒后重试...")
+                    time.sleep(wait_time)
                 else:
                     print(f"    所有重试都失败了")
                     browser.close()
@@ -359,25 +388,82 @@ def main():
                 'error': str(e)
             })
         
-        # 防止过快被封，每次抓取间隔 3 秒
-        time.sleep(3)
+        # 防止过快被封，每次抓取间隔 5 秒
+        time.sleep(5)
     
-    # 保存结果
+    # 创建输出文件夹
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"articles_detailed_{timestamp}.json"
+    folder_name = f"articles_batch_{timestamp}"
+    
+    # 确保文件夹名称唯一
+    counter = 1
+    original_folder_name = folder_name
+    while os.path.exists(folder_name):
+        folder_name = f"{original_folder_name}_{counter}"
+        counter += 1
+    
+    # 创建文件夹
+    os.makedirs(folder_name, exist_ok=True)
+    print(f"📁 创建输出文件夹: {folder_name}")
+    
+    # 保存结果文件
+    output_file = os.path.join(folder_name, "articles_detailed.json")
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(articles, f, ensure_ascii=False, indent=2)
     
     # 统计结果
     success_count = sum(1 for article in articles if article.get('title'))
+    fail_count = len(articles) - success_count
+    success_rate = success_count/len(articles)*100 if len(articles) > 0 else 0
+    
+    # 分析失败原因
+    failed_articles = [article for article in articles if not article.get('title')]
+    error_analysis = {}
+    for article in failed_articles:
+        error_msg = article.get('error', '未知错误')
+        error_analysis[error_msg] = error_analysis.get(error_msg, 0) + 1
+    
+    # 保存抓取信息
+    info_file = os.path.join(folder_name, "crawl_info.json")
+    crawl_info = {
+        "crawl_time": datetime.now().isoformat(),
+        "time_range": range_name,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+        "total_articles": len(articles),
+        "success_count": success_count,
+        "fail_count": fail_count,
+        "success_rate": f"{success_rate:.1f}%",
+        "source_file": "ArticleList.json",
+        "error_analysis": error_analysis
+    }
+    with open(info_file, "w", encoding="utf-8") as f:
+        json.dump(crawl_info, f, ensure_ascii=False, indent=2)
+    
     print(f"\n🎉 抓取完成！")
     print(f"📊 统计信息:")
     print(f"   时间范围: {range_name}")
     print(f"   总计: {len(articles)} 篇文章")
     print(f"   成功: {success_count} 篇")
-    print(f"   失败: {len(articles) - success_count} 篇")
-    print(f"   成功率: {success_count/len(articles)*100:.1f}%")
-    print(f"📁 结果已保存到: {output_file}")
+    print(f"   失败: {fail_count} 篇")
+    print(f"   成功率: {success_rate:.1f}%")
+    
+    # 显示失败分析
+    if fail_count > 0:
+        print(f"\n❌ 失败分析:")
+        for error_msg, count in error_analysis.items():
+            print(f"   {error_msg}: {count} 篇")
+        
+        # 提供改进建议
+        if success_rate < 80:
+            print(f"\n💡 改进建议:")
+            print(f"   - 成功率较低，建议增加抓取间隔时间")
+            print(f"   - 可以尝试在网络较好的时段进行抓取")
+            print(f"   - 考虑分批抓取，减少单次抓取数量")
+    
+    print(f"\n📁 结果已保存到文件夹: {folder_name}")
+    print(f"   📄 文章数据: {output_file}")
+    print(f"   📋 抓取信息: {info_file}")
 
 if __name__ == "__main__":
     main() 
