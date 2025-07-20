@@ -141,6 +141,40 @@ def fetch_article_content(url, retry_count=5):
                 # 额外等待一下，确保内容加载
                 page.wait_for_timeout(5000)
                 
+                # 检查页面是否有效（文章是否存在）
+                page_content = page.content()
+                
+                # 检测删除/违规页面的关键词
+                invalid_keywords = [
+                    "此内容发送失败无法查看",
+                    "此内容因涉嫌违反相关法律法规和政策发送失败",
+                    "内容已删除",
+                    "文章不存在",
+                    "该内容已被删除",
+                    "内容违规",
+                    "无法查看",
+                    "发送失败",
+                    "违规内容",
+                    "内容不存在"
+                ]
+                
+                is_invalid_page = any(keyword in page_content for keyword in invalid_keywords)
+                
+                if is_invalid_page:
+                    print(f"    ⚠️  检测到无效页面，文章可能已被删除或违规")
+                    browser.close()
+                    return {
+                        'url': url,
+                        'title': '',
+                        'author': '',
+                        'publish_time': '',
+                        'read_count': '',
+                        'like_count': '',
+                        'content': '',
+                        'error': '文章已被删除或违规，无法查看',
+                        'status': 'deleted'
+                    }
+                
                 # 提取文章信息
                 article_data = {
                     'url': url,
@@ -234,27 +268,6 @@ def fetch_article_content(url, retry_count=5):
                 else:
                     # 如果没有抓取到标题，继续重试
                     raise Exception("未抓取到文章标题，可能页面未完全加载")
-                
-            except Exception as e:
-                print(f"    第 {attempt + 1} 次尝试失败: {e}")
-                if attempt < retry_count - 1:
-                    # 递增等待时间，避免频繁请求
-                    wait_time = (attempt + 1) * 3
-                    print(f"    等待 {wait_time} 秒后重试...")
-                    time.sleep(wait_time)
-                else:
-                    print(f"    所有重试都失败了")
-                    browser.close()
-                    return {
-                        'url': url,
-                        'title': '',
-                        'author': '',
-                        'publish_time': '',
-                        'read_count': '',
-                        'like_count': '',
-                        'content': '',
-                        'error': f"重试 {retry_count} 次后仍然失败: {str(e)}"
-                    }
                 
             except Exception as e:
                 print(f"    第 {attempt + 1} 次尝试失败: {e}")
@@ -418,7 +431,9 @@ def main():
     
     # 分析失败原因
     failed_articles = [article for article in articles if not article.get('title')]
+    deleted_articles = [article for article in articles if article.get('status') == 'deleted']
     error_analysis = {}
+    
     for article in failed_articles:
         error_msg = article.get('error', '未知错误')
         error_analysis[error_msg] = error_analysis.get(error_msg, 0) + 1
@@ -433,6 +448,7 @@ def main():
         "total_articles": len(articles),
         "success_count": success_count,
         "fail_count": fail_count,
+        "deleted_count": len(deleted_articles),
         "success_rate": f"{success_rate:.1f}%",
         "source_file": "ArticleList.json",
         "error_analysis": error_analysis
@@ -446,6 +462,8 @@ def main():
     print(f"   总计: {len(articles)} 篇文章")
     print(f"   成功: {success_count} 篇")
     print(f"   失败: {fail_count} 篇")
+    if len(deleted_articles) > 0:
+        print(f"   📄 其中已删除/违规: {len(deleted_articles)} 篇")
     print(f"   成功率: {success_rate:.1f}%")
     
     # 显示失败分析
@@ -455,11 +473,15 @@ def main():
             print(f"   {error_msg}: {count} 篇")
         
         # 提供改进建议
-        if success_rate < 80:
+        if success_rate < 80 and len(deleted_articles) == 0:
             print(f"\n💡 改进建议:")
             print(f"   - 成功率较低，建议增加抓取间隔时间")
             print(f"   - 可以尝试在网络较好的时段进行抓取")
             print(f"   - 考虑分批抓取，减少单次抓取数量")
+        elif len(deleted_articles) > 0:
+            print(f"\n💡 说明:")
+            print(f"   - 部分文章已被删除或违规，这是正常现象")
+            print(f"   - 程序已自动识别并跳过这些无效页面，节省了抓取时间")
     
     print(f"\n📁 结果已保存到文件夹: {folder_name}")
     print(f"   📄 文章数据: {output_file}")
