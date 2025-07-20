@@ -212,121 +212,46 @@ def fetch_article_content(url, retry_count=5):
                 
                 # 提取阅读量
                 try:
-                    read_count = ''
-                    
-                    # 方法1: 尝试标准选择器
                     read_element = page.query_selector('span#js_read_area')
                     if read_element:
                         read_text = read_element.inner_text().strip()
+                        # 提取数字
                         read_match = re.search(r'(\d+)', read_text)
                         if read_match:
-                            read_count = read_match.group(1)
-                    
-                    # 方法2: 尝试其他可能的选择器
-                    if not read_count:
-                        selectors = [
-                            'span[id*="read"]',
-                            'span[class*="read"]',
-                            'div[id*="read"]',
-                            'div[class*="read"]',
-                            'span:has-text("阅读")',
-                            'div:has-text("阅读")'
-                        ]
-                        
-                        for selector in selectors:
-                            try:
-                                elements = page.query_selector_all(selector)
-                                for element in elements:
-                                    text = element.inner_text().strip()
-                                    if '阅读' in text and re.search(r'\d+', text):
-                                        read_match = re.search(r'(\d+)', text)
-                                        if read_match:
-                                            read_count = read_match.group(1)
-                                            break
-                                if read_count:
+                            article_data['read_count'] = read_match.group(1)
+                    else:
+                        # 尝试其他可能的选择器
+                        read_elements = page.query_selector_all('span')
+                        for element in read_elements:
+                            text = element.inner_text().strip()
+                            if '阅读' in text and re.search(r'\d+', text):
+                                read_match = re.search(r'(\d+)', text)
+                                if read_match:
+                                    article_data['read_count'] = read_match.group(1)
                                     break
-                            except:
-                                continue
-                    
-                    # 方法3: 全局搜索包含"阅读"的元素
-                    if not read_count:
-                        all_elements = page.query_selector_all('*')
-                        for element in all_elements:
-                            try:
-                                text = element.inner_text().strip()
-                                if '阅读' in text and re.search(r'\d+', text):
-                                    read_match = re.search(r'(\d+)', text)
-                                    if read_match:
-                                        read_count = read_match.group(1)
-                                        break
-                            except:
-                                continue
-                    
-                    article_data['read_count'] = read_count
-                    
-                except Exception as e:
-                    print(f"    阅读量提取失败: {e}")
-                    article_data['read_count'] = ''
+                except:
+                    pass
                 
                 # 提取点赞量
                 try:
-                    like_count = ''
-                    
-                    # 方法1: 尝试标准选择器
                     like_element = page.query_selector('span#like_area')
                     if like_element:
                         like_text = like_element.inner_text().strip()
                         like_match = re.search(r'(\d+)', like_text)
                         if like_match:
-                            like_count = like_match.group(1)
-                    
-                    # 方法2: 尝试其他可能的选择器
-                    if not like_count:
-                        selectors = [
-                            'span[id*="like"]',
-                            'span[class*="like"]',
-                            'div[id*="like"]',
-                            'div[class*="like"]',
-                            'span:has-text("赞")',
-                            'div:has-text("赞")',
-                            'span:has-text("点赞")',
-                            'div:has-text("点赞")'
-                        ]
-                        
-                        for selector in selectors:
-                            try:
-                                elements = page.query_selector_all(selector)
-                                for element in elements:
-                                    text = element.inner_text().strip()
-                                    if ('赞' in text or '点赞' in text) and re.search(r'\d+', text):
-                                        like_match = re.search(r'(\d+)', text)
-                                        if like_match:
-                                            like_count = like_match.group(1)
-                                            break
-                                if like_count:
+                            article_data['like_count'] = like_match.group(1)
+                    else:
+                        # 尝试其他可能的选择器
+                        like_elements = page.query_selector_all('span')
+                        for element in like_elements:
+                            text = element.inner_text().strip()
+                            if '赞' in text and re.search(r'\d+', text):
+                                like_match = re.search(r'(\d+)', text)
+                                if like_match:
+                                    article_data['like_count'] = like_match.group(1)
                                     break
-                            except:
-                                continue
-                    
-                    # 方法3: 全局搜索包含"赞"的元素
-                    if not like_count:
-                        all_elements = page.query_selector_all('*')
-                        for element in all_elements:
-                            try:
-                                text = element.inner_text().strip()
-                                if ('赞' in text or '点赞' in text) and re.search(r'\d+', text):
-                                    like_match = re.search(r'(\d+)', text)
-                                    if like_match:
-                                        like_count = like_match.group(1)
-                                        break
-                            except:
-                                continue
-                    
-                    article_data['like_count'] = like_count
-                    
-                except Exception as e:
-                    print(f"    点赞量提取失败: {e}")
-                    article_data['like_count'] = ''
+                except:
+                    pass
                 
                 # 提取正文内容
                 try:
@@ -335,15 +260,6 @@ def fetch_article_content(url, retry_count=5):
                         article_data['content'] = content_element.inner_text().strip()
                 except:
                     pass
-                
-                # 显示提取结果
-                print(f"    提取结果:")
-                print(f"      标题: {article_data.get('title', '未获取')}")
-                print(f"      作者: {article_data.get('author', '未获取')}")
-                print(f"      发布时间: {article_data.get('publish_time', '未获取')}")
-                print(f"      阅读量: {article_data.get('read_count', '未获取')}")
-                print(f"      点赞量: {article_data.get('like_count', '未获取')}")
-                print(f"      内容长度: {len(article_data.get('content', ''))} 字符")
                 
                 # 检查是否成功抓取到有效内容
                 if article_data.get('title') and len(article_data.get('title', '').strip()) > 0:
