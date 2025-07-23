@@ -23,6 +23,15 @@ python3 wechat_mp_batch_scraper_from_json.py
 python wechat_mp_batch_scraper_from_json.py
 ```
 
+# 依赖安装
+你需要安装 playwright，打开 terminal，输入：
+
+```
+pip install playwright
+```
+```
+playwright install
+```
 # 测试环境
 mac系统
 chrome 浏览器
