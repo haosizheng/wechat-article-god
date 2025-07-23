@@ -26,3 +26,7 @@ python wechat_mp_batch_scraper_from_json.py
 # 测试环境
 mac系统
 chrome 浏览器
+
+# 支持自由时间区间选择
+<img width="545" height="247" alt="image" src="https://github.com/user-attachments/assets/392002a5-7935-4656-b91e-f36072079293" />
+
