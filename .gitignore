@@ -1,0 +1,32 @@
+# 忽略输出文件夹
+output/
+
+# 忽略自动生成的统计、提取、临时和结果文件
+*.json
+*.csv
+*.xlsx
+*.xls
+*.log
+*.tmp
+*.bak
+*.out
+*.result
+*.stats
+*.zip
+
+# 忽略微信开发者工具项目
+wechat_dev_project/
+
+# 忽略Python缓存
+__pycache__/
+*.pyc
+
+# 忽略VSCode等编辑器配置
+.vscode/
+.idea/
+.DS_Store
+
+# 忽略自动生成的脚本和指南
+extraction_script.js
+automated_extraction_guide.md
+wechat_dev_usage_guide.md 
