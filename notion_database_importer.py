@@ -74,17 +74,17 @@ class NotionDatabaseImporter:
         # 统一换行符为 \n
         text = text.replace('\r\n', '\n').replace('\r', '\n')
         
-        # 将三个或更多连续的换行符替换为两个换行符
-        text = re.sub(r'\n{3,}', '\n\n', text)
+        # 将任意数量的连续换行符替换为单个换行符
+        text = re.sub(r'\n+', '\n', text)
         
         # 清理每个段落的首尾空白字符
-        paragraphs = [p.strip() for p in text.split('\n\n')]
+        lines = [line.strip() for line in text.split('\n')]
         
-        # 过滤掉空段落
-        paragraphs = [p for p in paragraphs if p]
+        # 过滤掉空行
+        lines = [line for line in lines if line]
         
-        # 用两个换行符重新连接段落
-        return '\n\n'.join(paragraphs)
+        # 用单个换行符重新连接行
+        return '\n'.join(lines)
 
     def parse_date(self, date_str: str) -> Optional[str]:
         """
@@ -573,6 +573,10 @@ class NotionDatabaseImporter:
         """
         创建文本块，处理长度限制和 Markdown 格式
         """
+        # 首先清理文本
+        text = self.clean_text(text)
+        
+        # 然后分割成块
         chunks = self.split_text_into_chunks(text)
         blocks = []
         
@@ -651,7 +655,7 @@ class NotionDatabaseImporter:
 
     def update_or_create_page(self, title: str, content: str, publish_date: Optional[str] = None,
                              author: Optional[str] = None, url: Optional[str] = None,
-                             base_dir: str = None) -> bool:
+                             base_dir: str = None, summary: Optional[str] = None) -> bool:
         """
         更新已存在的页面或创建新页面
         """
@@ -670,6 +674,9 @@ class NotionDatabaseImporter:
                 new_properties["URL"] = {"url": url}
             if publish_date:
                 new_properties["Publish Date"] = {"date": {"start": publish_date}}
+            if summary:
+                # 确保使用正确的属性名称 "Summary"
+                new_properties["Summary"] = {"rich_text": [{"text": {"content": summary}}]}
             
             # 查找已存在的页面
             existing_page_id = self.find_page_by_title(title)
@@ -914,13 +921,16 @@ class NotionDatabaseImporter:
                 publish_date = article.get('publish_time', '')
                 author = article.get('author', 'Unknown')
                 url = article.get('url', '')
+                summary = article.get('summary', '')  # 获取摘要字段
                 
                 # 转换发布日期格式
                 if publish_date:
                     publish_date = self.convert_chinese_date_to_iso(publish_date)
                 
                 # 更新或创建页面
-                if self.update_or_create_page(title, content, publish_date, author, url, base_dir):
+                if self.update_or_create_page(
+                    title, content, publish_date, author, url, base_dir, summary
+                ):
                     success += 1
                 
             except Exception as e:
@@ -947,27 +957,69 @@ def main():
 
     importer = NotionDatabaseImporter(notion_token, database_id)
     
-    # 假设我们使用最新的 articles_detailed.json 文件
-    # 首先找到最新的文章文件夹
-    base_dir = "."
-    article_folders = [d for d in os.listdir(base_dir) 
-                      if d.startswith("articles_batch_") and 
-                      os.path.isdir(os.path.join(base_dir, d))]
-    
-    if not article_folders:
-        print("Error: No articles_batch folders found")
+    # 查找Output文件夹
+    output_dir = os.path.join(os.path.dirname(__file__), "Output")
+    if not os.path.exists(output_dir):
+        print(f"❌ Output文件夹不存在: {output_dir}")
         return
     
-    # 获取最新的文件夹
-    latest_folder = max(article_folders)
-    json_file = os.path.join(base_dir, latest_folder, "articles_detailed.json")
+    # 查找所有子文件夹中的articles_detailed.json文件
+    json_files = []
+    for root, dirs, files in os.walk(output_dir):
+        if "articles_detailed.json" in files:
+            json_files.append(os.path.join(root, "articles_detailed.json"))
     
-    if not os.path.exists(json_file):
-        print(f"Error: {json_file} not found")
+    if not json_files:
+        print("❌ 在Output文件夹中没有找到任何articles_detailed.json文件")
         return
     
-    print(f"Importing articles from {json_file}")
-    importer.import_from_json(json_file)
+    # 显示找到的文件
+    print(f"\n📝 找到 {len(json_files)} 个文章列表文件:")
+    for i, f in enumerate(json_files, 1):
+        folder_name = os.path.basename(os.path.dirname(f))
+        print(f"{i}. {folder_name}")
+    
+    # 确认是否继续
+    confirm = input("\n是否开始导入这些文件到Notion？(y/n): ").strip().lower()
+    if confirm not in ['y', 'yes', '是']:
+        print("👋 已取消导入")
+        return
+    
+    # 导入所有文件
+    total_success = 0
+    total_articles = 0
+    
+    for i, json_file in enumerate(json_files, 1):
+        folder_name = os.path.basename(os.path.dirname(json_file))
+        print(f"\n{'='*50}")
+        print(f"处理第 {i}/{len(json_files)} 个文件: {folder_name}")
+        print(f"{'='*50}")
+        
+        try:
+            # 读取文件内容以获取文章数量
+            with open(json_file, 'r', encoding='utf-8') as f:
+                articles = json.load(f)
+                total_articles += len(articles)
+            
+            # 导入文件
+            print(f"开始导入 {json_file}...")
+            importer.import_from_json(json_file)
+            print(f"✅ {folder_name} 导入完成")
+            total_success += 1
+            
+        except Exception as e:
+            print(f"❌ 处理失败: {str(e)}")
+        
+        # 在处理文件之间添加短暂延迟
+        if i < len(json_files):
+            print("等待3秒后处理下一个文件...")
+            time.sleep(3)
+    
+    # 显示总体导入结果
+    print(f"\n📊 导入总结:")
+    print(f"- 成功处理文件: {total_success}/{len(json_files)}")
+    print(f"- 总文章数量: {total_articles}")
+    print("✨ 所有文件处理完成")
 
 if __name__ == "__main__":
     main() 

@@ -8,6 +8,40 @@ from playwright.sync_api import sync_playwright
 from urllib.parse import urlparse, unquote
 from pathlib import Path
 
+def extract_summary(content: str, max_length: int = 100) -> str:
+    """
+    从文章内容中提取摘要（第一段的前N个字）
+    """
+    if not content:
+        return ""
+    
+    # 按段落分割内容
+    paragraphs = [p.strip() for p in content.split('\n\n')]
+    
+    # 过滤掉空段落
+    paragraphs = [p for p in paragraphs if p]
+    
+    if not paragraphs:
+        return ""
+    
+    # 获取第一段
+    first_para = paragraphs[0]
+    
+    # 去除 Markdown 格式
+    first_para = re.sub(r'\*\*|\*|`|#|>|\[.*?\]\(.*?\)', '', first_para)
+    
+    # 截取指定长度
+    if len(first_para) > max_length:
+        # 尝试在标点符号处截断
+        punctuation_marks = ['。', '！', '？', '；', '，', '.', '!', '?', ';', ',']
+        for i in range(max_length, -1, -1):
+            if i < len(first_para) and first_para[i] in punctuation_marks:
+                return first_para[:i+1]
+        # 如果没有找到合适的标点，直接截断
+        return first_para[:max_length] + "..."
+    
+    return first_para
+
 def parse_date(date_str):
     """解析日期字符串，支持多种格式"""
     if not date_str:
@@ -133,6 +167,16 @@ def show_time_range_menu():
     print("0. 退出程序")
     print("="*50)
 
+def show_crawl_options():
+    """显示爬取选项菜单"""
+    print("\n" + "="*50)
+    print("📝 爬取选项设置：")
+    print("="*50)
+    print("是否爬取文章图片？")
+    print("1. 是 - 同时爬取文章和图片（速度较慢）")
+    print("2. 否 - 仅爬取文章文本（速度较快）[默认]")
+    print("="*50)
+
 def get_latest_n_articles(articles, n):
     """获取最新的N篇文章"""
     # 按日期排序（如果有日期）
@@ -228,9 +272,10 @@ def download_image(img_url: str, save_dir: str) -> str:
         print(f"    ⚠️ 图片下载失败 ({img_url}): {e}")
         return None
 
-def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
+def html_to_markdown(element, page, images_dir, save_images=False) -> tuple[str, list]:
     """
     将HTML元素转换为Markdown格式，并返回图片信息
+    save_images: 是否保存图片
     返回: (markdown_content, images_info)
     """
     if not element:
@@ -239,49 +284,42 @@ def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
     try:
         images_info = []  # 存储图片信息
         
-        # 首先处理所有图片元素
-        img_elements = element.query_selector_all('img')
-        print(f"    找到 {len(img_elements)} 个图片元素")
-        
-        for img in img_elements:
-            try:
-                # 获取图片URL
-                img_url = img.get_attribute('data-src') or img.get_attribute('src')
-                if img_url:
-                    if img_url.startswith('//'):
-                        img_url = 'https:' + img_url
-                    elif not img_url.startswith(('http://', 'https://')):
-                        img_url = 'https://' + img_url
+        # 只在需要保存图片时处理图片元素
+        if save_images:
+            # 首先处理所有图片元素
+            img_elements = element.query_selector_all('img')
+            print(f"    找到 {len(img_elements)} 个图片元素")
+            
+            for img in img_elements:
+                try:
+                    # 获取图片URL和替代文本
+                    img_url = img.get_attribute('data-src') or img.get_attribute('src')
+                    alt_text = img.get_attribute('alt') or '图片'
                     
-                    print(f"    正在处理图片: {img_url}")
-                    
-                    # 下载图片
-                    local_path = download_image(img_url, images_dir)
-                    if local_path:
-                        alt_text = img.get_attribute('alt') or '图片'
-                        images_info.append({
-                            'original_url': img_url,
-                            'local_path': local_path,
-                            'alt_text': alt_text,
-                            'filename': os.path.basename(local_path)
-                        })
-            except Exception as e:
-                print(f"    ⚠️ 处理图片元素失败: {e}")
+                    if img_url:
+                        if img_url.startswith('//'):
+                            img_url = 'https:' + img_url
+                        elif not img_url.startswith(('http://', 'https://')):
+                            img_url = 'https://' + img_url
+                        
+                        print(f"    正在处理图片: {img_url}")
+                        # 下载图片
+                        local_path = download_image(img_url, images_dir)
+                        if local_path:
+                            images_info.append({
+                                'original_url': img_url,
+                                'local_path': local_path,
+                                'alt_text': alt_text,
+                                'filename': os.path.basename(local_path)
+                            })
+                except Exception as e:
+                    print(f"    ⚠️ 处理图片元素失败: {e}")
+            
+            print(f"    ✓ 成功处理 {len(images_info)} 张图片")
 
-        # 获取元素的HTML内容
-        html_content = element.evaluate("""element => {
-            // 处理图片懒加载
-            element.querySelectorAll('img').forEach(img => {
-                if (img.dataset.src) {
-                    img.src = img.dataset.src;
-                }
-            });
-            return element.innerHTML;
-        }""")
-        
-        # 使用JavaScript提取格式化内容
-        formatted_content = element.evaluate("""element => {
-            function getMarkdown(node, depth = 0) {
+        # 获取元素的HTML内容并转换为Markdown
+        formatted_content = element.evaluate("""(element, shouldSaveImages) => {
+            function getMarkdown(node) {
                 if (!node) return '';
                 
                 let result = '';
@@ -296,7 +334,6 @@ def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
                 // 处理元素节点
                 if (node.nodeType === Node.ELEMENT_NODE) {
                     let nodeName = node.nodeName.toLowerCase();
-                    let classList = Array.from(node.classList || []);
                     
                     // 跳过样式和脚本标签
                     if (['style', 'script'].includes(nodeName)) {
@@ -305,7 +342,7 @@ def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
                     
                     // 获取所有子节点的内容
                     let childContent = Array.from(node.childNodes)
-                        .map(child => getMarkdown(child, depth + 1))
+                        .map(child => getMarkdown(child))
                         .filter(text => text)
                         .join(' ')
                         .trim();
@@ -328,6 +365,8 @@ def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
                         case 'blockquote': return `\\n> ${childContent}\\n`;
                         case 'a': return `[${childContent}](${node.href || ''})`;
                         case 'img': {
+                            // 如果不保存图片，直接跳过图片处理
+                            if (!shouldSaveImages) return '';
                             let src = node.src || node.dataset.src;
                             let alt = node.alt || '图片';
                             return src ? `\\n![${alt}](${src})\\n` : '';
@@ -352,7 +391,7 @@ def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
             }
             
             return getMarkdown(element);
-        }""")
+        }""", element, save_images)  # 传递参数的正确方式
         
         # 处理JavaScript转义的换行符
         formatted_content = formatted_content.replace('\\n', '\n')
@@ -360,15 +399,17 @@ def html_to_markdown(element, page, images_dir) -> tuple[str, list]:
         # 清理多余的空行
         formatted_content = re.sub(r'\n{3,}', '\n\n', formatted_content)
         
-        print(f"    ✓ 成功处理 {len(images_info)} 张图片")
         return formatted_content.strip(), images_info
         
     except Exception as e:
         print(f"    ⚠️ Markdown转换出错: {str(e)}")
         return "", []
 
-def fetch_article_content(url, folder_name, retry_count=5):
-    """抓取单篇文章的详细信息，支持重试"""
+def fetch_article_content(url, folder_name, save_images=False, retry_count=5):
+    """
+    抓取单篇文章的详细信息，支持重试
+    save_images: 是否保存图片
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
@@ -441,12 +482,14 @@ def fetch_article_content(url, folder_name, retry_count=5):
                     'read_count': '',
                     'like_count': '',
                     'content': '',
-                    'content_format': 'markdown',  # 标记内容格式
-                    'images': [],  # 记录图片信息
+                    'summary': '',
+                    'content_format': 'markdown',
+                    'images': [] if save_images else None,  # 只在需要时初始化图片列表
                     'metadata': {
                         'crawl_time': datetime.now().isoformat(),
                         'markdown_enabled': True,
                         'images_saved': False,
+                        'image_count': 0,
                         'version': '1.0'
                     }
                 }
@@ -518,36 +561,43 @@ def fetch_article_content(url, folder_name, retry_count=5):
                 except:
                     pass
                 
-                # 创建图片保存目录
-                images_dir = os.path.join(folder_name, 'images')
-                os.makedirs(images_dir, exist_ok=True)
-                article_data['images_dir'] = os.path.relpath(images_dir, folder_name)  # 保存相对路径
-
-                # 提取正文内容（Markdown格式）
+                # 创建图片保存目录（仅在需要时）
+                images_dir = os.path.join(folder_name, 'images') if save_images else None
+                if save_images:
+                    os.makedirs(images_dir, exist_ok=True)
+                    article_data['images_dir'] = os.path.relpath(images_dir, folder_name)
+                
+                # 提取正文内容
                 try:
                     content_element = page.query_selector('div#js_content')
                     if content_element:
                         # 将内容转换为Markdown格式
-                        content, images = html_to_markdown(content_element, page, images_dir)
+                        content, images = html_to_markdown(content_element, page, images_dir, save_images)
                         article_data['content'] = content
-                        article_data['images'] = images
+                        if save_images:
+                            article_data['images'] = images
+                            if images:
+                                article_data['metadata']['images_saved'] = True
+                                article_data['metadata']['image_count'] = len(images)
+                        
+                        # 提取摘要
+                        article_data['summary'] = extract_summary(content)
                         
                         if not content:
                             raise Exception("内容转换后为空")
                         
-                        # 检查是否有图片被保存
-                        if images:
-                            article_data['metadata']['images_saved'] = True
-                            article_data['metadata']['image_count'] = len(images)
                 except Exception as e:
                     print(f"    ⚠️ 内容转换失败: {e}")
                     # 尝试基本的文本提取
                     try:
                         content_element = page.query_selector('div#js_content')
                         if content_element:
-                            article_data['content'] = content_element.inner_text().strip()
+                            content = content_element.inner_text().strip()
+                            article_data['content'] = content
                             article_data['content_format'] = 'plain'
                             article_data['metadata']['markdown_enabled'] = False
+                            # 即使是纯文本也尝试提取摘要
+                            article_data['summary'] = extract_summary(content)
                     except:
                         pass
                 
@@ -577,115 +627,60 @@ def fetch_article_content(url, folder_name, retry_count=5):
                         'read_count': '',
                         'like_count': '',
                         'content': '',
-                        'error': f"重试 {retry_count} 次后仍然失败: {str(e)}"
+                        'summary': '',
+                        'error': f"重试 {retry_count} 次后仍然失败: {str(e)}",
+                        'images': [] if save_images else None
                     }
 
-def main():
-    print("微信公众号文章批量抓取工具 (JSON 版)")
-    print("从 ArticleList.json 文件读取文章链接并批量抓取")
+def process_single_list(json_file: str, output_base_dir: str, 
+                     start_date=None, end_date=None, save_images=False, 
+                     latest_n=None) -> None:
+    """
+    处理单个文章列表文件
+    Args:
+        json_file: JSON文件的完整路径
+        output_base_dir: 输出目录的基础路径（Output文件夹）
+        start_date: 开始日期
+        end_date: 结束日期
+        save_images: 是否保存图片
+        latest_n: 如果设置，则只处理最新的N篇文章
+    """
+    print(f"\n处理文章列表: {os.path.basename(json_file)}")
     
-    # 获取当前工作目录（应该是根目录下的某个子目录）
-    current_dir = os.getcwd()
-    
-    # 读取 ArticleList.json 文件
+    # 读取文章列表文件
     try:
-        with open("ArticleList.json", "r", encoding="utf-8") as f:
+        with open(json_file, "r", encoding="utf-8") as f:
             all_articles = json.load(f)
-        print(f"✅ 成功读取 ArticleList.json，共 {len(all_articles)} 篇文章")
+        print(f"✅ 成功读取文章列表，共 {len(all_articles)} 篇文章")
     except Exception as e:
-        print(f"❌ 读取 ArticleList.json 失败: {e}")
+        print(f"❌ 读取文件失败: {e}")
         return
 
-    # 显示时间范围选择菜单
-    while True:
-        show_time_range_menu()
-        choice = input("请选择 (0-13): ").strip()
-        
-        if choice == "0":
-            print("👋 程序已退出")
-            return
-        
-        elif choice == "9":
-            # 抓取所有文章
-            start_date = None
-            end_date = None
-            filtered_articles = all_articles
-            range_name = "所有文章"
-            break
-        
-        elif choice == "8":
-            # 自定义时间范围
-            start_date, end_date = get_custom_date_range()
-            if start_date and end_date:
-                filtered_articles = filter_articles_by_date(all_articles, start_date, end_date)
-                range_name = f"自定义范围 ({start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')})"
-                break
-            else:
-                print("❌ 自定义时间范围设置失败")
-                continue
-        
-        elif choice in ["1", "2", "3", "4", "5", "6", "7"]:
-            # 预设时间范围
-            start_date, end_date, range_name = get_preset_date_range(choice)
-            if start_date and end_date:
-                filtered_articles = filter_articles_by_date(all_articles, start_date, end_date)
-                break
-            else:
-                print("❌ 预设时间范围获取失败")
-                continue
-        
-        elif choice == "10":
-            # 最新1篇（快速测试）
-            filtered_articles = get_latest_n_articles(all_articles, 1)
-            range_name = "最新1篇文章 (快速测试)"
-            start_date = end_date = None
-            break
-            
-        elif choice == "11":
-            # 最新3篇（基本测试）
-            filtered_articles = get_latest_n_articles(all_articles, 3)
-            range_name = "最新3篇文章 (基本测试)"
-            start_date = end_date = None
-            break
-            
-        elif choice == "12":
-            # 最新10篇（完整测试）
-            filtered_articles = get_latest_n_articles(all_articles, 10)
-            range_name = "最新10篇文章 (完整测试)"
-            start_date = end_date = None
-            break
-            
-        elif choice == "13":
-            # 自定义数量
-            count = get_custom_article_count()
-            filtered_articles = get_latest_n_articles(all_articles, count)
-            range_name = f"最新{count}篇文章"
-            start_date = end_date = None
-            break
-        
-        else:
-            print("❌ 无效选择，请重新输入")
-            continue
-    
-    # 显示筛选结果
-    print(f"\n📊 抓取范围: {range_name}")
+    # 根据时间范围筛选文章
     if start_date or end_date:
-        print(f"📅 筛选条件: {start_date.strftime('%Y-%m-%d') if start_date else '不限'} 至 {end_date.strftime('%Y-%m-%d') if end_date else '不限'}")
-    print(f"📝 筛选结果: {len(filtered_articles)} 篇文章")
+        filtered_articles = filter_articles_by_date(all_articles, start_date, end_date)
+        date_range = f"({start_date.strftime('%Y-%m-%d') if start_date else '不限'} 至 {end_date.strftime('%Y-%m-%d') if end_date else '不限'})"
+    else:
+        filtered_articles = all_articles
+        date_range = "(全部)"
+
+    # 如果指定了获取最新的N篇文章
+    if latest_n is not None:
+        filtered_articles = get_latest_n_articles(filtered_articles, latest_n)
+        date_range = f"(最新 {latest_n} 篇)"
+
+    print(f"📝 符合条件的文章数量: {len(filtered_articles)} {date_range}")
     
     if len(filtered_articles) == 0:
-        print("❌ 没有找到符合条件的文章")
+        print("❌ 没有找到符合条件的文章，跳过此文件")
         return
     
-    # 确认是否继续
-    confirm = input(f"\n是否开始抓取这 {len(filtered_articles)} 篇文章？(y/n): ").strip().lower()
-    if confirm not in ['y', 'yes', '是']:
-        print("👋 已取消抓取")
-        return
-
-    # 创建输出文件夹（在当前工作目录下）
+    print(f"\n🚀 开始爬取 {len(filtered_articles)} 篇文章...")
+    
+    # 在Output文件夹下创建输出子文件夹
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    batch_folder = f"articles_batch_{timestamp}"
+    list_name = os.path.splitext(os.path.basename(json_file))[0]
+    batch_folder = os.path.join(output_base_dir, f"{list_name}_batch_{timestamp}")
     
     # 确保文件夹名称唯一
     counter = 1
@@ -694,12 +689,15 @@ def main():
         batch_folder = f"{original_folder_name}_{counter}"
         counter += 1
     
-    # 创建主文件夹和图片文件夹（在当前工作目录下）
+    # 创建主文件夹和图片文件夹
     os.makedirs(batch_folder, exist_ok=True)
     batch_images_dir = os.path.join(batch_folder, 'images')
-    os.makedirs(batch_images_dir, exist_ok=True)
+    if save_images:
+        os.makedirs(batch_images_dir, exist_ok=True)
+    
     print(f"📁 创建输出文件夹: {batch_folder}")
-    print(f"📁 创建图片文件夹: {batch_images_dir}")
+    if save_images:
+        print(f"📁 创建图片文件夹: {batch_images_dir}")
 
     # 提取所有链接
     urls = []
@@ -716,18 +714,19 @@ def main():
         
         try:
             # 确保每篇文章都使用正确的图片保存路径
-            article_data = fetch_article_content(url, batch_folder)
+            article_data = fetch_article_content(url, batch_folder, save_images)
             
-            # 添加调试信息
-            print(f"    图片保存目录: {batch_images_dir}")
-            print(f"    文章图片数量: {len(article_data.get('images', []))}")
+            # 添加调试信息（仅在保存图片时显示）
+            if save_images:
+                print(f"    图片保存目录: {batch_images_dir}")
+                print(f"    文章图片数量: {len(article_data.get('images', []))}")
             
             articles.append(article_data)
             
             # 显示抓取结果
             if article_data.get('title'):
                 print(f"    ✅ 成功: {article_data['title'][:50]}...")
-                if article_data.get('metadata', {}).get('images_saved'):
+                if save_images and article_data.get('metadata', {}).get('images_saved'):
                     print(f"       📸 已保存 {article_data.get('metadata', {}).get('image_count', 0)} 张图片")
             else:
                 print(f"    ❌ 失败: 未获取到标题")
@@ -742,6 +741,7 @@ def main():
                 'read_count': '',
                 'like_count': '',
                 'content': '',
+                'summary': '',
                 'error': str(e),
                 'content_format': 'plain',
                 'images': [],
@@ -749,16 +749,15 @@ def main():
                     'crawl_time': datetime.now().isoformat(),
                     'markdown_enabled': False,
                     'images_saved': False,
+                    'image_count': 0,
                     'version': '1.0'
                 }
             })
         
-        # 检查图片文件夹
-        if os.path.exists(batch_images_dir):
+        # 检查图片文件夹（仅在保存图片时）
+        if save_images and os.path.exists(batch_images_dir):
             image_files = os.listdir(batch_images_dir)
             print(f"    📁 图片文件夹状态: {len(image_files)} 个文件")
-        else:
-            print(f"    ⚠️ 图片文件夹不存在: {batch_images_dir}")
         
         # 防止过快被封，每次抓取间隔 5 秒
         time.sleep(5)
@@ -786,7 +785,7 @@ def main():
     info_file = os.path.join(batch_folder, "crawl_info.json")
     crawl_info = {
         "crawl_time": datetime.now().isoformat(),
-        "time_range": range_name,
+        "time_range": date_range, # 使用传入的date_range
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "total_articles": len(articles),
@@ -794,7 +793,7 @@ def main():
         "fail_count": fail_count,
         "deleted_count": len(deleted_articles),
         "success_rate": f"{success_rate:.1f}%",
-        "source_file": "ArticleList.json",
+        "source_file": os.path.basename(json_file),
         "error_analysis": error_analysis,
         "format_version": "1.0",
         "markdown_enabled": True,
@@ -809,6 +808,132 @@ def main():
     print(f"   📄 文章数据: {output_file}")
     print(f"   📋 抓取信息: {info_file}")
     print(f"   🖼️  图片目录: {os.path.join(batch_folder, 'images')}")
+
+def main():
+    print("微信公众号文章批量抓取工具 (JSON 版)")
+    print("从 ArticleList 文件夹读取文章列表并批量抓取")
+    
+    # 检查必要的文件夹
+    article_list_dir = os.path.join(os.path.dirname(__file__), "ArticleList")
+    output_dir = os.path.join(os.path.dirname(__file__), "Output")
+    
+    # 确保文件夹存在
+    os.makedirs(article_list_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 获取所有JSON文件
+    json_files = [f for f in os.listdir(article_list_dir) 
+                 if f.endswith('.json') and os.path.isfile(os.path.join(article_list_dir, f))]
+    
+    if not json_files:
+        print(f"\n❌ 在 ArticleList 文件夹中没有找到 JSON 文件")
+        print(f"请将文章列表文件放入: {article_list_dir}")
+        return
+    
+    # 显示找到的文件
+    print(f"\n📝 找到 {len(json_files)} 个文章列表文件:")
+    for i, f in enumerate(json_files, 1):
+        print(f"{i}. {f}")
+    
+    # 统一选择时间范围
+    print("\n首先，让我们选择要处理的时间范围...")
+    latest_n = None  # 用于存储最新N篇的设置
+    
+    while True:
+        show_time_range_menu()
+        choice = input("请选择 (0-13): ").strip()
+        
+        if choice == "0":
+            print("👋 程序已退出")
+            return
+        
+        elif choice == "9":
+            # 抓取所有文章
+            start_date = None
+            end_date = None
+            range_name = "所有文章"
+            break
+        
+        elif choice == "8":
+            # 自定义时间范围
+            start_date, end_date = get_custom_date_range()
+            if start_date and end_date:
+                range_name = f"自定义范围 ({start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')})"
+                break
+            else:
+                print("❌ 自定义时间范围设置失败")
+                continue
+        
+        elif choice in ["1", "2", "3", "4", "5", "6", "7"]:
+            # 预设时间范围
+            start_date, end_date, range_name = get_preset_date_range(choice)
+            if start_date and end_date:
+                break
+            else:
+                print("❌ 预设时间范围获取失败")
+                continue
+        
+        elif choice == "10":
+            # 最新1篇（快速测试）
+            start_date = end_date = None
+            latest_n = 1
+            range_name = "最新1篇文章 (快速测试)"
+            break
+            
+        elif choice == "11":
+            # 最新3篇（基本测试）
+            start_date = end_date = None
+            latest_n = 3
+            range_name = "最新3篇文章 (基本测试)"
+            break
+            
+        elif choice == "12":
+            # 最新10篇（完整测试）
+            start_date = end_date = None
+            latest_n = 10
+            range_name = "最新10篇文章 (完整测试)"
+            break
+            
+        elif choice == "13":
+            # 自定义数量
+            start_date = end_date = None
+            latest_n = get_custom_article_count()
+            range_name = f"最新{latest_n}篇文章"
+            break
+        
+        else:
+            print("❌ 无效选择，请重新输入")
+            continue
+    
+    # 统一选择是否爬取图片
+    print("\n接下来，选择是否爬取文章图片...")
+    show_crawl_options()
+    image_choice = input("请选择 (1-2): ").strip() or "2"
+    save_images = image_choice == "1"
+    
+    if save_images:
+        print("\n⚠️ 您选择了同时爬取图片，这可能会显著增加爬取时间")
+    else:
+        print("\n✓ 您选择了仅爬取文本，这将加快爬取速度")
+    
+    print(f"\n📊 处理配置:")
+    print(f"时间范围: {range_name}")
+    print(f"爬取图片: {'是' if save_images else '否'}")
+    print(f"文件数量: {len(json_files)} 个")
+    if latest_n:
+        print(f"每个文件处理: 最新 {latest_n} 篇文章")
+    
+    # 处理每个文件
+    for i, json_file in enumerate(json_files, 1):
+        print(f"\n{'='*50}")
+        print(f"处理第 {i}/{len(json_files)} 个文件: {json_file}")
+        print(f"{'='*50}")
+        
+        full_path = os.path.join(article_list_dir, json_file)
+        process_single_list(full_path, output_dir, start_date, end_date, save_images, latest_n)
+    
+    print("\n✨ 所有文件处理完成")
+    print(f"📁 所有结果已保存到: {output_dir}")
 
 if __name__ == "__main__":
     main() 
