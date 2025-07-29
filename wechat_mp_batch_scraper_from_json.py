@@ -2,8 +2,11 @@ import json
 import time
 import re
 import os
+import requests
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse, unquote
+from pathlib import Path
 
 def parse_date(date_str):
     """解析日期字符串，支持多种格式"""
@@ -121,7 +124,117 @@ def show_time_range_menu():
     print("0. 退出程序")
     print("="*50)
 
-def fetch_article_content(url, retry_count=5):
+def download_image(img_url: str, save_dir: str) -> str:
+    """
+    下载图片并返回本地路径
+    """
+    try:
+        # 解析URL，获取文件名
+        parsed_url = urlparse(img_url)
+        img_name = os.path.basename(unquote(parsed_url.path))
+        
+        # 确保文件名有效且唯一
+        img_name = re.sub(r'[<>:"/\\|?*]', '_', img_name)  # 替换非法字符
+        if not img_name or len(img_name) > 255:  # 处理无效或过长的文件名
+            img_name = f"img_{int(time.time()*1000)}.jpg"
+        
+        # 构建保存路径
+        img_path = os.path.join(save_dir, img_name)
+        
+        # 如果文件已存在，添加数字后缀
+        base, ext = os.path.splitext(img_path)
+        counter = 1
+        while os.path.exists(img_path):
+            img_path = f"{base}_{counter}{ext}"
+            counter += 1
+        
+        # 下载图片
+        response = requests.get(img_url, timeout=30)
+        response.raise_for_status()
+        
+        # 保存图片
+        with open(img_path, 'wb') as f:
+            f.write(response.content)
+        
+        return img_path
+    except Exception as e:
+        print(f"    ⚠️ 图片下载失败 ({img_url}): {e}")
+        return None
+
+def html_to_markdown(element, page, images_dir) -> str:
+    """
+    将HTML元素转换为Markdown格式
+    """
+    if not element:
+        return ""
+    
+    markdown_content = []
+    
+    # 获取所有子元素
+    children = element.query_selector_all('*')
+    
+    for child in children:
+        # 获取元素标签名和类名
+        tag_name = child.evaluate('element => element.tagName.toLowerCase()')
+        class_name = child.get_attribute('class') or ''
+        
+        # 获取元素文本
+        text = child.inner_text().strip()
+        if not text:
+            continue
+        
+        # 处理标题
+        if tag_name == 'h1':
+            markdown_content.append(f"\n# {text}\n")
+        elif tag_name == 'h2':
+            markdown_content.append(f"\n## {text}\n")
+        elif tag_name == 'h3':
+            markdown_content.append(f"\n### {text}\n")
+        elif tag_name == 'h4':
+            markdown_content.append(f"\n#### {text}\n")
+        
+        # 处理段落
+        elif tag_name == 'p':
+            # 检查是否为加粗文本
+            if 'strong' in class_name.lower() or child.query_selector('strong'):
+                markdown_content.append(f"\n**{text}**\n")
+            else:
+                markdown_content.append(f"\n{text}\n")
+        
+        # 处理列表
+        elif tag_name in ['ul', 'ol']:
+            items = child.query_selector_all('li')
+            for idx, item in enumerate(items):
+                if tag_name == 'ul':
+                    markdown_content.append(f"- {item.inner_text().strip()}\n")
+                else:
+                    markdown_content.append(f"{idx+1}. {item.inner_text().strip()}\n")
+        
+        # 处理图片
+        elif tag_name == 'img':
+            img_url = child.get_attribute('data-src') or child.get_attribute('src')
+            if img_url:
+                if img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+                
+                # 下载图片
+                local_path = download_image(img_url, images_dir)
+                if local_path:
+                    # 使用相对路径
+                    rel_path = os.path.relpath(local_path, os.path.dirname(images_dir))
+                    markdown_content.append(f"\n![图片]({rel_path})\n")
+        
+        # 处理引用
+        elif 'blockquote' in class_name.lower():
+            markdown_content.append(f"\n> {text}\n")
+        
+        # 处理代码块
+        elif 'code' in class_name.lower():
+            markdown_content.append(f"\n```\n{text}\n```\n")
+    
+    return '\n'.join(markdown_content)
+
+def fetch_article_content(url, folder_name, retry_count=5):
     """抓取单篇文章的详细信息，支持重试"""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -253,12 +366,18 @@ def fetch_article_content(url, retry_count=5):
                 except:
                     pass
                 
-                # 提取正文内容
+                # 创建图片保存目录
+                images_dir = os.path.join(folder_name, 'images')
+                os.makedirs(images_dir, exist_ok=True)
+                
+                # 提取正文内容（Markdown格式）
                 try:
                     content_element = page.query_selector('div#js_content')
                     if content_element:
-                        article_data['content'] = content_element.inner_text().strip()
-                except:
+                        # 将内容转换为Markdown格式
+                        article_data['content'] = html_to_markdown(content_element, page, images_dir)
+                except Exception as e:
+                    print(f"    ⚠️ 内容转换失败: {e}")
                     pass
                 
                 # 检查是否成功抓取到有效内容
@@ -379,7 +498,11 @@ def main():
         print(f"[{idx}/{len(urls)}] 正在抓取: {url}")
         
         try:
-            article_data = fetch_article_content(url)
+            # 创建图片保存目录
+            images_dir = os.path.join(os.path.dirname(__file__), "images") # 假设脚本在当前目录下
+            os.makedirs(images_dir, exist_ok=True)
+
+            article_data = fetch_article_content(url, images_dir)
             articles.append(article_data)
             
             # 显示抓取结果

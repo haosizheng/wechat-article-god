@@ -10,6 +10,7 @@ import csv
 import os
 import glob
 from datetime import datetime
+import re
 
 # 尝试导入 pandas，如果失败则设置为 None
 try:
@@ -18,6 +19,38 @@ try:
 except ImportError:
     pd = None
     PANDAS_AVAILABLE = False
+
+def format_date_for_notion(date_str):
+    """将各种日期字符串格式化为YYYY-MM-DD，Notion友好"""
+    if not date_str:
+        return ''
+    try:
+        # 预处理：去除全角冒号、特殊空白
+        date_str = date_str.strip().replace('：', ':').replace('\u3000', '').replace('\xa0', '').replace('\u200b', '')
+        date_formats = [
+            '%Y年%m月%d日 %H:%M',
+            '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M', '%Y.%m.%d %H:%M',
+            '%Y-%m-%d', '%Y年%m月%d日', '%Y/%m/%d', '%Y.%m.%d'
+        ]
+        for fmt in date_formats:
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                return dt.strftime('%Y-%m-%d')
+            except Exception:
+                continue
+        # 尝试只取前10位
+        if len(date_str) >= 10:
+            return date_str[:10]
+        print(f"⚠️ 无法识别日期格式: {date_str}")
+    except Exception as e:
+        print(f"⚠️ 日期解析异常: {date_str} ({e})")
+    return date_str  # 保底返回原始
+
+def clean_content(text):
+    if not text:
+        return ''
+    # 替换多个连续换行为一个
+    return re.sub(r'(\r\n|\r|\n)+', '\n', text)
 
 def json_to_csv(json_file, csv_file, filter_failed=True):
     """
@@ -42,6 +75,9 @@ def json_to_csv(json_file, csv_file, filter_failed=True):
         for article in articles:
             title = article.get('title', '').strip()
             error = article.get('error', '').strip()
+            raw_date = article.get('publish_time', '')
+            notion_date = format_date_for_notion(raw_date)
+            content = clean_content(article.get('content', ''))
             
             if filter_failed:
                 # 过滤模式：只保留成功抓取的文章
@@ -50,11 +86,11 @@ def json_to_csv(json_file, csv_file, filter_failed=True):
                     row = {
                         '标题': title,
                         '作者': article.get('author', ''),
-                        '发布时间': article.get('publish_time', ''),
+                        'Date': notion_date,
                         '阅读量': article.get('read_count', ''),
                         '点赞量': article.get('like_count', ''),
                         '链接': article.get('url', ''),
-                        '内容': article.get('content', '')[:1000] + '...' if len(article.get('content', '')) > 1000 else article.get('content', ''),
+                        '内容': content[:1000] + '...' if len(content) > 1000 else content,
                         '状态': 'success'
                     }
                     csv_data.append(row)
@@ -66,11 +102,11 @@ def json_to_csv(json_file, csv_file, filter_failed=True):
                 row = {
                     '标题': title,
                     '作者': article.get('author', ''),
-                    '发布时间': article.get('publish_time', ''),
+                    'Date': notion_date,
                     '阅读量': article.get('read_count', ''),
                     '点赞量': article.get('like_count', ''),
                     '链接': article.get('url', ''),
-                    '内容': article.get('content', '')[:1000] + '...' if len(article.get('content', '')) > 1000 else article.get('content', ''),
+                    '内容': content[:1000] + '...' if len(content) > 1000 else content,
                     '错误信息': error,
                     '状态': article.get('status', '')
                 }
