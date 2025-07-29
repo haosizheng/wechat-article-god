@@ -29,7 +29,10 @@ python wechat_mp_batch_scraper_from_json.py
 
 # 转换 csv 和导入 notion
 你可以通过脚本json_to_csv_advanced.py转换你的 json 文件（所有文章内容）为一个表格。
-你可以通过脚本notion_database_importer.py导入你的 json 文件到你的 notion 中某个 database。需要自己提供 notion 的 secert id 和具体的 database id。
+
+你可以通过脚本notion_database_importer.py导入你的 json 文件到你的 notion 中某个 database。
+
+*需要自己提供 notion 的 secert id 和具体的 database id。
 
 # 依赖安装
 你需要安装 playwright，这用于模拟人工操作来爬取文章正文内容，打开 terminal，输入：
