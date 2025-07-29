@@ -8,7 +8,8 @@ https://extension.automa.site/workflow/qDMr7a6TVA6L3rMa4HUer
 
 # 步骤3
 
-用步骤 2 的文件，替换名为“ArticleList.json”的文件。
+用步骤 2 的文件，替换文件夹 ArticleList 中添加该“ArticleList.json”的文件，并且删除你不需要的文件。
+因为脚本执行的时候会将文件夹 ArticleList 中的所有 json 文件一并处理。
 
 # 步骤4
 打开 terminal，输入：
@@ -23,8 +24,15 @@ python3 wechat_mp_batch_scraper_from_json.py
 python wechat_mp_batch_scraper_from_json.py
 ```
 
+# 输出
+在命令行中提示完成之后，你的文件会被保存在Output文件夹的单独文件夹中。
+
+# 转换 csv 和导入 notion
+你可以通过脚本json_to_csv_advanced.py转换你的 json 文件（所有文章内容）为一个表格。
+你可以通过脚本notion_database_importer.py导入你的 json 文件到你的 notion 中某个 database。需要自己提供 notion 的 secert id 和具体的 database id。
+
 # 依赖安装
-你需要安装 playwright，打开 terminal，输入：
+你需要安装 playwright，这用于模拟人工操作来爬取文章正文内容，打开 terminal，输入：
 
 ```
 pip install playwright
@@ -34,6 +42,7 @@ playwright install
 ```
 # 测试环境
 mac系统
+
 chrome 浏览器
 
 # 支持自由时间区间选择
