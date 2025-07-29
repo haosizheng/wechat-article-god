@@ -8,6 +8,41 @@ import mimetypes
 import time
 import base64
 
+def load_config() -> Dict[str, str]:
+    """
+    从配置文件加载 Notion 配置
+    如果配置文件不存在，创建一个模板
+    """
+    config_path = os.path.join(os.path.dirname(__file__), "notion_config.json")
+    
+    # 如果配置文件不存在，创建一个模板
+    if not os.path.exists(config_path):
+        default_config = {
+            "notion_token": "your_notion_token_here",
+            "database_id": "your_database_id_here"
+        }
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(default_config, f, indent=4, ensure_ascii=False)
+        print(f"⚠️ 配置文件已创建在 {config_path}")
+        print("请编辑配置文件，填入你的 Notion Token 和 Database ID")
+        return default_config
+    
+    # 读取配置文件
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        # 验证配置
+        if config["notion_token"] == "your_notion_token_here" or \
+           config["database_id"] == "your_database_id_here":
+            print("⚠️ 请先在配置文件中填入正确的 Notion Token 和 Database ID")
+            return {}
+            
+        return config
+    except Exception as e:
+        print(f"❌ 读取配置文件失败: {str(e)}")
+        return {}
+
 class NotionDatabaseImporter:
     def __init__(self, notion_token: str, database_id: str):
         """
@@ -603,22 +638,14 @@ class NotionDatabaseImporter:
 
     def merge_properties(self, old_props: Dict, new_props: Dict) -> Dict:
         """
-        合并新旧属性，保留旧属性中新属性没有的值
+        合并新旧属性，只更新新数据中存在的字段
         """
-        merged = old_props.copy()
+        merged = old_props.copy()  # 保留所有旧属性
         
-        # 更新新属性中有值的字段
+        # 只更新新数据中有值的字段
         for key, new_value in new_props.items():
-            if key in merged:
-                # 检查新值是否为空
-                if key == "Title" and new_value.get("title"):
-                    merged[key] = new_value
-                elif key == "Author" and new_value.get("select", {}).get("name"):
-                    merged[key] = new_value
-                elif key == "URL" and new_value.get("url"):
-                    merged[key] = new_value
-                elif key == "Publish Date" and new_value.get("date", {}).get("start"):
-                    merged[key] = new_value
+            if new_value is not None:  # 只更新有值的字段
+                merged[key] = new_value
         
         return merged
 
@@ -629,16 +656,20 @@ class NotionDatabaseImporter:
         更新已存在的页面或创建新页面
         """
         try:
-            # 构建新的属性
-            new_properties = {
-                "Title": {"title": [{"text": {"content": title}}]},
-                "Author": {"select": {"name": author}} if author else None,
-                "URL": {"url": url} if url else None,
-                "Publish Date": {"date": {"start": publish_date}} if publish_date else None
-            }
+            # 构建新的属性（只包含有值的字段）
+            new_properties = {}
             
-            # 移除空值
-            new_properties = {k: v for k, v in new_properties.items() if v is not None}
+            # 标题总是需要的
+            if title:
+                new_properties["Title"] = {"title": [{"text": {"content": title}}]}
+            
+            # 其他字段只在有值时添加
+            if author:
+                new_properties["Author"] = {"select": {"name": author}}
+            if url:
+                new_properties["URL"] = {"url": url}
+            if publish_date:
+                new_properties["Publish Date"] = {"date": {"start": publish_date}}
             
             # 查找已存在的页面
             existing_page_id = self.find_page_by_title(title)
@@ -648,6 +679,14 @@ class NotionDatabaseImporter:
                 print(f"    📄 页面ID: {existing_page_id}")
                 
                 try:
+                    # 获取现有属性
+                    print(f"    📑 获取现有属性...")
+                    current_properties = self.get_page_properties(existing_page_id)
+                    
+                    # 合并属性（保留未更新的字段）
+                    print(f"    🔄 合并属性...")
+                    merged_properties = self.merge_properties(current_properties, new_properties)
+                    
                     # 首先删除所有现有内容
                     print(f"    🗑️ 删除现有内容...")
                     response = requests.get(
@@ -677,7 +716,7 @@ class NotionDatabaseImporter:
                     })
                     
                     # 添加作者和日期信息
-                    info_text = f"作者：{author}"
+                    info_text = f"作者：{author if author else '未知'}"
                     if publish_date:
                         info_text += f" | 发布时间：{publish_date}"
                     content_blocks.append({
@@ -723,7 +762,7 @@ class NotionDatabaseImporter:
                     # 更新页面属性
                     print(f"    📝 更新页面属性...")
                     update_data = {
-                        "properties": new_properties
+                        "properties": merged_properties  # 使用合并后的属性
                     }
                     
                     response = requests.patch(
@@ -893,12 +932,17 @@ class NotionDatabaseImporter:
         print(f"\n导入完成: {success}/{total} 篇文章成功导入/更新")
 
 def main():
-    # 这些值需要从环境变量或配置文件中获取
-    notion_token = os.getenv("NOTION_TOKEN")
-    database_id = os.getenv("NOTION_DATABASE_ID")
+    # 从配置文件加载设置
+    config = load_config()
+    
+    if not config:
+        return
+    
+    notion_token = config.get("notion_token")
+    database_id = config.get("database_id")
     
     if not notion_token or not database_id:
-        print("Error: Please set NOTION_TOKEN and NOTION_DATABASE_ID environment variables")
+        print("Error: Please set notion_token and database_id in notion_config.json")
         return
 
     importer = NotionDatabaseImporter(notion_token, database_id)
