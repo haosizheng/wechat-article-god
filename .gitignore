@@ -1,5 +1,10 @@
-# 忽略输出文件夹
-output/
+# 忽略输出文件夹内容但保留文件夹
+Output/*
+!Output/.gitkeep
+
+# 忽略ArticleList文件夹内容但保留文件夹
+ArticleList/*
+!ArticleList/.gitkeep
 
 # 忽略自动生成的统计、提取、临时和结果文件
 *.json
