@@ -554,6 +554,304 @@ class NotionDatabaseImporter:
         
         return blocks
 
+    def find_page_by_title(self, title: str) -> Optional[str]:
+        """
+        在数据库中查找指定标题的页面
+        返回: 页面 ID（如果找到）
+        """
+        try:
+            # 使用 Notion 搜索 API
+            response = requests.post(
+                "https://api.notion.com/v1/databases/" + self.database_id + "/query",
+                headers=self.headers,
+                json={
+                    "filter": {
+                        "property": "Title",
+                        "title": {
+                            "equals": title
+                        }
+                    }
+                }
+            )
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            
+            if results:
+                # 返回第一个匹配的页面 ID
+                return results[0]["id"]
+            
+            return None
+            
+        except Exception as e:
+            print(f"    ⚠️ 查找页面失败: {e}")
+            return None
+
+    def get_page_properties(self, page_id: str) -> Dict:
+        """
+        获取页面的现有属性
+        """
+        try:
+            response = requests.get(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json().get("properties", {})
+        except Exception as e:
+            print(f"    ⚠️ 获取页面属性失败: {e}")
+            return {}
+
+    def merge_properties(self, old_props: Dict, new_props: Dict) -> Dict:
+        """
+        合并新旧属性，保留旧属性中新属性没有的值
+        """
+        merged = old_props.copy()
+        
+        # 更新新属性中有值的字段
+        for key, new_value in new_props.items():
+            if key in merged:
+                # 检查新值是否为空
+                if key == "Title" and new_value.get("title"):
+                    merged[key] = new_value
+                elif key == "Author" and new_value.get("select", {}).get("name"):
+                    merged[key] = new_value
+                elif key == "URL" and new_value.get("url"):
+                    merged[key] = new_value
+                elif key == "Publish Date" and new_value.get("date", {}).get("start"):
+                    merged[key] = new_value
+        
+        return merged
+
+    def update_or_create_page(self, title: str, content: str, publish_date: Optional[str] = None,
+                             author: Optional[str] = None, url: Optional[str] = None,
+                             base_dir: str = None) -> bool:
+        """
+        更新已存在的页面或创建新页面
+        """
+        try:
+            # 构建新的属性
+            new_properties = {
+                "Title": {"title": [{"text": {"content": title}}]},
+                "Author": {"select": {"name": author}} if author else None,
+                "URL": {"url": url} if url else None,
+                "Publish Date": {"date": {"start": publish_date}} if publish_date else None
+            }
+            
+            # 移除空值
+            new_properties = {k: v for k, v in new_properties.items() if v is not None}
+            
+            # 查找已存在的页面
+            existing_page_id = self.find_page_by_title(title)
+            
+            if existing_page_id:
+                print(f"    📝 找到已存在的页面，准备更新...")
+                print(f"    📄 页面ID: {existing_page_id}")
+                
+                try:
+                    # 首先删除所有现有内容
+                    print(f"    🗑️ 删除现有内容...")
+                    response = requests.get(
+                        f"https://api.notion.com/v1/blocks/{existing_page_id}/children",
+                        headers=self.headers
+                    )
+                    response.raise_for_status()
+                    existing_blocks = response.json().get("results", [])
+                    
+                    for block in existing_blocks:
+                        requests.delete(
+                            f"https://api.notion.com/v1/blocks/{block['id']}",
+                            headers=self.headers
+                        )
+                    print(f"    ✅ 现有内容已删除")
+                    
+                    # 准备内容块
+                    print(f"    📝 准备新内容...")
+                    content_blocks = []
+                    
+                    # 添加标题
+                    content_blocks.append({
+                        "type": "heading_1",
+                        "heading_1": {
+                            "rich_text": [{"type": "text", "text": {"content": title}}]
+                        }
+                    })
+                    
+                    # 添加作者和日期信息
+                    info_text = f"作者：{author}"
+                    if publish_date:
+                        info_text += f" | 发布时间：{publish_date}"
+                    content_blocks.append({
+                        "type": "paragraph",
+                        "paragraph": {
+                            "rich_text": [{"type": "text", "text": {"content": info_text}}]
+                        }
+                    })
+                    
+                    # 添加原文链接
+                    if url:
+                        content_blocks.append({
+                            "type": "paragraph",
+                            "paragraph": {
+                                "rich_text": [
+                                    {
+                                        "type": "text",
+                                        "text": {
+                                            "content": "原文链接：",
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": {
+                                            "content": url,
+                                            "link": {"url": url}
+                                        }
+                                    }
+                                ]
+                            }
+                        })
+                    
+                    # 添加分隔线
+                    content_blocks.append({
+                        "type": "divider",
+                        "divider": {}
+                    })
+                    
+                    # 处理正文内容
+                    if content:
+                        content_blocks.extend(self.create_text_block(content))
+                    
+                    # 更新页面属性
+                    print(f"    📝 更新页面属性...")
+                    update_data = {
+                        "properties": new_properties
+                    }
+                    
+                    response = requests.patch(
+                        f"https://api.notion.com/v1/pages/{existing_page_id}",
+                        headers=self.headers,
+                        json=update_data
+                    )
+                    response.raise_for_status()
+                    print(f"    ✅ 页面属性已更新")
+                    
+                    # 添加新内容
+                    print(f"    📝 添加新内容...")
+                    response = requests.patch(
+                        f"https://api.notion.com/v1/blocks/{existing_page_id}/children",
+                        headers=self.headers,
+                        json={"children": content_blocks}
+                    )
+                    response.raise_for_status()
+                    print(f"    ✅ 新内容已添加")
+                    
+                    print(f"    ✨ 页面更新成功")
+                    return True
+                    
+                except requests.exceptions.RequestException as e:
+                    print(f"    ❌ API请求失败: {str(e)}")
+                    if hasattr(e.response, 'text'):
+                        error_data = e.response.text
+                        print(f"    📝 错误详情: {error_data}")
+                    return False
+                    
+            else:
+                print(f"    📄 创建新页面...")
+                try:
+                    # 创建新页面
+                    page_data = {
+                        "parent": {"database_id": self.database_id},
+                        "properties": new_properties,
+                        "children": []
+                    }
+                    
+                    response = requests.post(
+                        "https://api.notion.com/v1/pages",
+                        headers=self.headers,
+                        json=page_data
+                    )
+                    response.raise_for_status()
+                    
+                    new_page_id = response.json().get("id")
+                    print(f"    ✅ 新页面创建成功，ID: {new_page_id}")
+                    
+                    # 添加内容
+                    content_blocks = []
+                    
+                    # 添加标题
+                    content_blocks.append({
+                        "type": "heading_1",
+                        "heading_1": {
+                            "rich_text": [{"type": "text", "text": {"content": title}}]
+                        }
+                    })
+                    
+                    # 添加作者和日期信息
+                    info_text = f"作者：{author}"
+                    if publish_date:
+                        info_text += f" | 发布时间：{publish_date}"
+                    content_blocks.append({
+                        "type": "paragraph",
+                        "paragraph": {
+                            "rich_text": [{"type": "text", "text": {"content": info_text}}]
+                        }
+                    })
+                    
+                    # 添加原文链接
+                    if url:
+                        content_blocks.append({
+                            "type": "paragraph",
+                            "paragraph": {
+                                "rich_text": [
+                                    {
+                                        "type": "text",
+                                        "text": {
+                                            "content": "原文链接：",
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": {
+                                            "content": url,
+                                            "link": {"url": url}
+                                        }
+                                    }
+                                ]
+                            }
+                        })
+                    
+                    # 添加分隔线
+                    content_blocks.append({
+                        "type": "divider",
+                        "divider": {}
+                    })
+                    
+                    # 处理正文内容
+                    if content:
+                        content_blocks.extend(self.create_text_block(content))
+                    
+                    # 添加内容
+                    print(f"    📝 添加页面内容...")
+                    response = requests.patch(
+                        f"https://api.notion.com/v1/blocks/{new_page_id}/children",
+                        headers=self.headers,
+                        json={"children": content_blocks}
+                    )
+                    response.raise_for_status()
+                    print(f"    ✅ 内容添加成功")
+                    
+                    return True
+                    
+                except requests.exceptions.RequestException as e:
+                    print(f"    ❌ API请求失败: {str(e)}")
+                    if hasattr(e.response, 'text'):
+                        error_data = e.response.text
+                        print(f"    📝 错误详情: {error_data}")
+                    return False
+            
+        except Exception as e:
+            print(f"    ❌ 更新/创建页面失败: {str(e)}")
+            return False
+
     def import_from_json(self, json_file: str) -> None:
         """从 JSON 文件导入文章到 Notion database"""
         print(f"正在从 {json_file} 导入文章...")
@@ -582,125 +880,9 @@ class NotionDatabaseImporter:
                 if publish_date:
                     publish_date = self.convert_chinese_date_to_iso(publish_date)
                 
-                # 检查内容格式
-                content_format = article.get('content_format', 'plain')
-                is_markdown = content_format == 'markdown'
-                
-                # 创建页面
-                page_data = {
-                    "parent": {"database_id": self.database_id},
-                    "properties": {
-                        "Title": {"title": [{"text": {"content": title}}]},
-                        "Author": {"select": {"name": author}},
-                        "URL": {"url": url if url else None},
-                        "Publish Date": {"date": {"start": publish_date}} if publish_date else None
-                    },
-                    "children": []
-                }
-                
-                # 移除空值
-                if not page_data["properties"]["URL"]["url"]:
-                    del page_data["properties"]["URL"]
-                if not page_data["properties"]["Publish Date"]:
-                    del page_data["properties"]["Publish Date"]
-                
-                # 添加内容块
-                content_blocks = []
-                
-                # 添加标题
-                content_blocks.append({
-                    "type": "heading_1",
-                    "heading_1": {
-                        "rich_text": [{"type": "text", "text": {"content": title}}]
-                    }
-                })
-                
-                # 添加作者和日期信息
-                info_text = f"作者：{author}"
-                if publish_date:
-                    info_text += f" | 发布时间：{publish_date}"
-                content_blocks.append({
-                    "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [{"type": "text", "text": {"content": info_text}}]
-                    }
-                })
-                
-                # 添加原文链接
-                if url:
-                    content_blocks.append({
-                        "type": "paragraph",
-                        "paragraph": {
-                            "rich_text": [
-                                {
-                                    "type": "text",
-                                    "text": {
-                                        "content": "原文链接：",
-                                    }
-                                },
-                                {
-                                    "type": "text",
-                                    "text": {
-                                        "content": url,
-                                        "link": {"url": url}
-                                    }
-                                }
-                            ]
-                        }
-                    })
-                
-                # 添加分隔线
-                content_blocks.append({
-                    "type": "divider",
-                    "divider": {}
-                })
-                
-                # 处理正文内容
-                if is_markdown:
-                    # 将内容分成段落
-                    paragraphs = content.split('\n\n')
-                    for para in paragraphs:
-                        if para.strip():
-                            # 检查是否是图片标记
-                            img_match = re.match(r'!\[([^\]]*)\]\(([^)]+)\)', para.strip())
-                            if img_match:
-                                # 如果是图片，添加图片描述
-                                alt_text = img_match.group(1)
-                                if alt_text:
-                                    content_blocks.append({
-                                        "type": "paragraph",
-                                        "paragraph": {
-                                            "rich_text": [{"type": "text", "text": {"content": f"[图片说明: {alt_text}]"}}]
-                                        }
-                                    })
-                            else:
-                                # 处理可能超长的段落
-                                content_blocks.extend(self.create_text_block(para.strip()))
-                else:
-                    # 处理纯文本内容
-                    content_blocks.extend(self.create_text_block(content))
-                
-                # 更新页面数据
-                page_data["children"] = content_blocks
-                
-                # 创建页面
-                try:
-                    response = requests.post(
-                        "https://api.notion.com/v1/pages",
-                        headers=self.headers,
-                        json=page_data
-                    )
-                    response.raise_for_status()
-                    
+                # 更新或创建页面
+                if self.update_or_create_page(title, content, publish_date, author, url, base_dir):
                     success += 1
-                    print(f"✅ 导入成功")
-                    
-                except requests.exceptions.RequestException as e:
-                    print(f"❌ 导入失败: {str(e)}")
-                    if hasattr(e.response, 'text'):
-                        error_data = json.loads(e.response.text)
-                        if 'message' in error_data:
-                            print(f"   错误信息: {error_data['message']}")
                 
             except Exception as e:
                 print(f"❌ 处理失败: {str(e)}")
@@ -708,7 +890,7 @@ class NotionDatabaseImporter:
             # 添加延迟以避免超出 Notion API 限制
             time.sleep(0.5)
         
-        print(f"\n导入完成: {success}/{total} 篇文章成功导入")
+        print(f"\n导入完成: {success}/{total} 篇文章成功导入/更新")
 
 def main():
     # 这些值需要从环境变量或配置文件中获取
