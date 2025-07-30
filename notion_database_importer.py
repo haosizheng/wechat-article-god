@@ -10,6 +10,23 @@ from notion.config import load_config
 from notion.api_client import NotionApiClient
 from notion.text_processor import TextProcessor
 from notion.markdown_processor import MarkdownProcessor
+import re
+
+def normalize_text(text):
+    """将文本中的多个连续换行符合并为一个
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        str: 处理后的文本
+    """
+    if not text:
+        return text
+        
+    # 使用正则表达式替换2个或更多连续的换行符为单个换行符
+    normalized = re.sub(r'\n{2,}', '\n', text)
+    return normalized
 
 class NotionDatabaseImporter:
     def __init__(self, notion_token: str, database_id: str):
@@ -181,6 +198,12 @@ class NotionDatabaseImporter:
                 # 转换发布日期格式
                 if publish_date:
                     publish_date = self.text_processor.convert_chinese_date_to_iso(publish_date)
+                
+                # 处理content和summary的换行符
+                if 'content' in article:
+                    article['content'] = normalize_text(article['content'])
+                if 'summary' in article:
+                    article['summary'] = normalize_text(article['summary'])
                 
                 # 更新或创建页面
                 if self.update_or_create_page(
