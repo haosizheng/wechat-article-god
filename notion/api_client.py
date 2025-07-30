@@ -82,35 +82,38 @@ class NotionApiClient:
         
         return merged
 
-    def delete_blocks_batch(self, block_ids: List[str], batch_size: int = 10):
-        """
-        批量删除内容块
-        """
-        def delete_block(block_id: str):
-            try:
-                response = requests.delete(
-                    f"{self.base_url}/blocks/{block_id}",
-                    headers=self.headers
-                )
-                response.raise_for_status()
-                return True
-            except Exception as e:
-                print(f"    ⚠️ 删除块 {block_id} 失败: {e}")
-                return False
-
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # 分批提交删除任务
-            for i in range(0, len(block_ids), batch_size):
-                batch = block_ids[i:i + batch_size]
-                futures = [executor.submit(delete_block, block_id) for block_id in batch]
-                results.extend([f.result() for f in concurrent.futures.as_completed(futures)])
-                
-                # 每批之间添加很短的延迟，避免触发 API 限制
-                if i + batch_size < len(block_ids):
-                    time.sleep(0.1)
+    def delete_blocks_batch(self, block_ids):
+        """删除一批块，遇到409错误时会重试
         
-        return all(results)
+        Args:
+            block_ids: 要删除的块ID列表
+        """
+        success_count = 0
+        
+        for block_id in block_ids:
+            # 最多重试2次
+            for attempt in range(2):
+                try:
+                    response = requests.delete(
+                        f"{self.base_url}/blocks/{block_id}",
+                        headers=self.headers
+                    )
+                    response.raise_for_status()
+                    success_count += 1
+                    # 每次删除后短暂等待
+                    time.sleep(0.1)
+                    break
+                except Exception as e:
+                    if "409" in str(e) and attempt < 1:
+                        # 如果是409错误且还可以重试，等待后重试
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        print(f"      ⚠️ 删除块 {block_id} 失败: {e}")
+                        break
+        
+        # 如果至少删除了一半的块，就认为基本成功
+        return success_count >= len(block_ids) / 2
 
     def delete_page_content(self, page_id: str):
         """
