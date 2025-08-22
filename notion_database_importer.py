@@ -11,6 +11,91 @@ from notion.api_client import NotionApiClient
 from notion.text_processor import TextProcessor
 from notion.markdown_processor import MarkdownProcessor
 import re
+import requests
+
+class ImportCheckpoint:
+    def __init__(self, checkpoint_file="import_checkpoint.json"):
+        self.checkpoint_file = checkpoint_file
+        self.processed_files = set()
+        self.processed_articles = {}
+        self.failed_imports = {}  # {file_path: {article_title: error_message}}
+        self.load_checkpoint()
+
+    def load_checkpoint(self):
+        """加载检查点文件"""
+        try:
+            if os.path.exists(self.checkpoint_file):
+                with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.processed_files = set(data.get('processed_files', []))
+                    self.processed_articles = {
+                        k: set(v) for k, v in data.get('processed_articles', {}).items()
+                    }
+                    self.failed_imports = data.get('failed_imports', {})
+                print(f"📋 已加载检查点: {len(self.processed_files)} 个文件, "
+                      f"{sum(len(articles) for articles in self.processed_articles.values())} 篇文章, "
+                      f"{sum(len(articles) for articles in self.failed_imports.values())} 篇失败")
+        except Exception as e:
+            print(f"⚠️ 加载检查点失败: {e}")
+            self.processed_files = set()
+            self.processed_articles = {}
+            self.failed_imports = {}
+    
+    def save_checkpoint(self):
+        """保存检查点"""
+        try:
+            data = {
+                'processed_files': list(self.processed_files),
+                'processed_articles': {
+                    k: list(v) for k, v in self.processed_articles.items()
+                },
+                'failed_imports': self.failed_imports
+            }
+            with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ 保存检查点失败: {e}")
+    
+    def is_file_processed(self, file_path):
+        """检查文件是否已处理"""
+        return file_path in self.processed_files
+    
+    def is_article_processed(self, file_path, article_title):
+        """检查文章是否已处理"""
+        return article_title in self.processed_articles.get(file_path, set())
+    
+    def mark_file_processed(self, file_path):
+        """标记文件为已处理"""
+        self.processed_files.add(file_path)
+        self.save_checkpoint()
+    
+    def mark_article_processed(self, file_path, article_title):
+        """标记文章为已处理"""
+        if file_path not in self.processed_articles:
+            self.processed_articles[file_path] = set()
+        self.processed_articles[file_path].add(article_title)
+        self.save_checkpoint()
+    
+    def mark_import_failed(self, file_path, article_title, error_message):
+        """记录导入失败的文章"""
+        if file_path not in self.failed_imports:
+            self.failed_imports[file_path] = {}
+        self.failed_imports[file_path][article_title] = error_message
+        self.save_checkpoint()
+        print(f"❌ 记录失败: {article_title}")
+    
+    def get_failed_imports(self):
+        """获取所有失败的导入"""
+        return self.failed_imports
+    
+    def remove_from_failed(self, file_path, article_title):
+        """从失败列表中移除（当重试成功时）"""
+        if file_path in self.failed_imports and article_title in self.failed_imports[file_path]:
+            del self.failed_imports[file_path][article_title]
+            if not self.failed_imports[file_path]:  # 如果文件的所有文章都已处理
+                del self.failed_imports[file_path]
+            self.save_checkpoint()
+            print(f"✅ 从失败列表移除: {article_title}")
 
 def normalize_text(text):
     """将文本中的多个连续换行符合并为一个
@@ -56,7 +141,9 @@ class NotionDatabaseImporter:
             if publish_date:
                 new_properties["Publish Date"] = {"date": {"start": publish_date}}
             if summary:
-                new_properties["Summary"] = {"rich_text": [{"text": {"content": summary}}]}
+                # 确保summary的换行符被正确处理
+                normalized_summary = normalize_text(summary)
+                new_properties["Summary"] = {"rich_text": [{"text": {"content": normalized_summary}}]}
             
             # 查找已存在的页面
             existing_page_id = self.api_client.find_page_by_title(title)
@@ -73,28 +160,41 @@ class NotionDatabaseImporter:
                 print(f"    🔄 合并属性...")
                 merged_properties = self.api_client.merge_properties(current_properties, new_properties)
                 
-                # 准备内容块
-                print(f"    📝 准备新内容...")
-                content_blocks = self.prepare_content_blocks(title, author, publish_date, url, content)
-                
-                # 删除现有内容
-                if not self.api_client.delete_page_content(existing_page_id):
-                    return False
+                # 检查页面是否有内容
+                has_content = False
+                try:
+                    response = requests.get(
+                        f"{self.api_client.base_url}/blocks/{existing_page_id}/children",
+                        headers=self.api_client.headers
+                    )
+                    response.raise_for_status()
+                    existing_blocks = response.json().get("results", [])
+                    has_content = len(existing_blocks) > 0
+                except Exception as e:
+                    print(f"    ⚠️ 检查页面内容时出错: {str(e)}")
+                    has_content = True  # 如果检查失败，假设有内容以避免覆盖
                 
                 # 更新页面属性
                 if not self.api_client.update_page_properties(existing_page_id, merged_properties):
                     return False
                 
-                # 分批添加新内容
-                try:
-                    self.api_client.add_blocks_in_batches(existing_page_id, content_blocks)
-                    print(f"    ✅ 新内容已添加")
-                except Exception as e:
-                    print(f"    ❌ 添加内容失败: {str(e)}")
-                    if hasattr(e, 'response') and hasattr(e.response, 'text'):
-                        error_data = e.response.text
-                        print(f"    📝 错误详情: {error_data}")
-                    return False
+                if not has_content:
+                    print(f"    📄 页面内容为空，添加新内容...")
+                    # 准备内容块
+                    content_blocks = self.prepare_content_blocks(title, author, publish_date, url, content)
+                    
+                    # 分批添加新内容
+                    try:
+                        self.api_client.add_blocks_in_batches(existing_page_id, content_blocks)
+                        print(f"    ✅ 新内容已添加")
+                    except Exception as e:
+                        print(f"    ❌ 添加内容失败: {str(e)}")
+                        if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                            error_data = e.response.text
+                            print(f"    📝 错误详情: {error_data}")
+                        return False
+                else:
+                    print(f"    ℹ️ 页面已有内容，保持不变")
                 
                 print(f"    ✨ 页面更新成功")
                 return True
@@ -123,7 +223,7 @@ class NotionDatabaseImporter:
                 "rich_text": [{"type": "text", "text": {"content": title}}]
             }
         })
-        
+            
         # 添加作者和日期信息
         info_text = f"作者：{author if author else '未知'}"
         if publish_date:
@@ -170,9 +270,14 @@ class NotionDatabaseImporter:
         
         return content_blocks
 
-    def import_from_json(self, json_file: str) -> None:
+    def import_from_json(self, json_file: str, checkpoint: ImportCheckpoint) -> None:
         """从 JSON 文件导入文章到 Notion database"""
         print(f"正在从 {json_file} 导入文章...")
+        
+        # 如果文件已经完全处理过，跳过
+        if checkpoint.is_file_processed(json_file):
+            print(f"✅ 文件已完全处理过，跳过: {json_file}")
+            return
         
         # 获取文件所在目录（用于解析相对图片路径）
         base_dir = os.path.dirname(os.path.abspath(json_file))
@@ -184,11 +289,17 @@ class NotionDatabaseImporter:
         success = 0
         
         for idx, article in enumerate(articles, 1):
-            print(f"\n处理第 {idx}/{total} 篇文章: {article.get('title', 'Untitled')}")
+            title = article.get('title', 'Untitled')
+            print(f"\n处理第 {idx}/{total} 篇文章: {title}")
+            
+            # 如果文章已处理过，跳过
+            if checkpoint.is_article_processed(json_file, title):
+                print(f"    ✅ 文章已处理过，跳过")
+                success += 1
+                continue
             
             try:
                 # 确保所有必要字段都存在
-                title = article.get('title', 'Untitled')
                 content = article.get('content', '')
                 publish_date = article.get('publish_time', '')
                 author = article.get('author', 'Unknown')
@@ -210,13 +321,21 @@ class NotionDatabaseImporter:
                     title, content, publish_date, author, url, base_dir, summary
                 ):
                     success += 1
+                    # 标记文章为已处理
+                    checkpoint.mark_article_processed(json_file, title)
                 
             except Exception as e:
                 print(f"❌ 处理失败: {str(e)}")
+                # 记录失败的文章
+                checkpoint.mark_import_failed(json_file, title, str(e))
             
             # 添加延迟以避免超出 Notion API 限制
             time.sleep(0.5)
         
+        # 如果所有文章都处理成功，标记文件为已处理
+        if success == total:
+            checkpoint.mark_file_processed(json_file)
+
         print(f"\n导入完成: {success}/{total} 篇文章成功导入/更新")
 
 def main():
@@ -233,6 +352,8 @@ def main():
         print("Error: Please set notion_token and database_id in notion_config.json")
         return
 
+    # 初始化检查点系统
+    checkpoint = ImportCheckpoint()
     importer = NotionDatabaseImporter(notion_token, database_id)
     
     # 查找Output文件夹
@@ -251,14 +372,20 @@ def main():
         print("❌ 在Output文件夹中没有找到任何articles_detailed.json文件")
         return
     
-    # 显示找到的文件
+    # 显示找到的文件和处理进度
     print(f"\n📝 找到 {len(json_files)} 个文章列表文件:")
     for i, f in enumerate(json_files, 1):
         folder_name = os.path.basename(os.path.dirname(f))
-        print(f"{i}. {folder_name}")
+        status = "✅ 已处理" if checkpoint.is_file_processed(f) else "⏳ 待处理"
+        if not checkpoint.is_file_processed(f) and f in checkpoint.processed_articles:
+            processed_count = len(checkpoint.processed_articles[f])
+            with open(f, 'r', encoding='utf-8') as file:
+                total_count = len(json.load(file))
+            status = f"🔄 进行中 ({processed_count}/{total_count})"
+        print(f"{i}. {folder_name} - {status}")
     
     # 确认是否继续
-    confirm = input("\n是否开始导入这些文件到Notion？(y/n): ").strip().lower()
+    confirm = input("\n是否继续导入这些文件到Notion？(y/n): ").strip().lower()
     if confirm not in ['y', 'yes', '是']:
         print("👋 已取消导入")
         return
@@ -281,7 +408,7 @@ def main():
             
             # 导入文件
             print(f"开始导入 {json_file}...")
-            importer.import_from_json(json_file)
+            importer.import_from_json(json_file, checkpoint)
             print(f"✅ {folder_name} 导入完成")
             total_success += 1
             

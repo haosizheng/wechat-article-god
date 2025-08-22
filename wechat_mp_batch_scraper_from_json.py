@@ -6,10 +6,11 @@ from utils.date_utils import get_preset_date_range, get_custom_date_range
 from utils.text_utils import filter_articles_by_date, get_latest_n_articles
 from utils.ui_utils import show_time_range_menu, show_crawl_options, get_custom_article_count
 from utils.article_scraper import fetch_article_content
+from utils.progress_manager import ProgressManager, find_incomplete_batch, get_pending_articles
 
 def process_single_list(json_file: str, output_base_dir: str, 
                      start_date=None, end_date=None, save_images=False, 
-                     latest_n=None) -> None:
+                     latest_n=None, resume_batch=None) -> None:
     """
     处理单个文章列表文件
     Args:
@@ -19,123 +20,162 @@ def process_single_list(json_file: str, output_base_dir: str,
         end_date: 结束日期
         save_images: 是否保存图片
         latest_n: 如果设置，则只处理最新的N篇文章
+        resume_batch: 如果不为None，则继续处理该批次
     """
     print(f"\n处理文章列表: {os.path.basename(json_file)}")
     
-    # 读取文章列表文件
-    try:
-        with open(json_file, "r", encoding="utf-8") as f:
-            all_articles = json.load(f)
-        print(f"✅ 成功读取文章列表，共 {len(all_articles)} 篇文章")
-    except Exception as e:
-        print(f"❌ 读取文件失败: {e}")
-        return
-
-    # 根据时间范围筛选文章
-    if start_date or end_date:
-        filtered_articles = filter_articles_by_date(all_articles, start_date, end_date)
-        date_range = f"({start_date.strftime('%Y-%m-%d') if start_date else '不限'} 至 {end_date.strftime('%Y-%m-%d') if end_date else '不限'})"
+    # 如果是继续上次的批次
+    if resume_batch:
+        batch_folder = resume_batch
+        pending_urls, progress_data = get_pending_articles(batch_folder)
+        if not pending_urls:
+            print("❌ 没有找到需要继续处理的文章")
+            return
+            
+        print(f"📝 继续处理上次未完成的批次:")
+        print(f"   📁 批次文件夹: {os.path.basename(batch_folder)}")
+        print(f"   🔄 待处理文章: {len(pending_urls)} 篇")
+        print(f"   ✅ 已完成文章: {progress_data.get('completed_count', 0)} 篇")
+        
+        # 使用现有的进度管理器
+        progress_manager = ProgressManager(batch_folder)
+        
     else:
-        filtered_articles = all_articles
-        date_range = "(全部)"
+        # 读取文章列表文件
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                all_articles = json.load(f)
+            print(f"✅ 成功读取文章列表，共 {len(all_articles)} 篇文章")
+        except Exception as e:
+            print(f"❌ 读取文件失败: {e}")
+            return
 
-    # 如果指定了获取最新的N篇文章
-    if latest_n is not None:
-        filtered_articles = get_latest_n_articles(filtered_articles, latest_n)
-        date_range = f"(最新 {latest_n} 篇)"
+        # 根据时间范围筛选文章
+        if start_date or end_date:
+            filtered_articles = filter_articles_by_date(all_articles, start_date, end_date)
+            date_range = f"({start_date.strftime('%Y-%m-%d') if start_date else '不限'} 至 {end_date.strftime('%Y-%m-%d') if end_date else '不限'})"
+        else:
+            filtered_articles = all_articles
+            date_range = "(全部)"
 
-    print(f"📝 符合条件的文章数量: {len(filtered_articles)} {date_range}")
-    
-    if len(filtered_articles) == 0:
-        print("❌ 没有找到符合条件的文章，跳过此文件")
-        return
-    
-    print(f"\n🚀 开始爬取 {len(filtered_articles)} 篇文章...")
-    
-    # 在Output文件夹下创建输出子文件夹
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    list_name = os.path.splitext(os.path.basename(json_file))[0]
-    batch_folder = os.path.join(output_base_dir, f"{list_name}_batch_{timestamp}")
-    
-    # 确保文件夹名称唯一
-    counter = 1
-    original_folder_name = batch_folder
-    while os.path.exists(batch_folder):
-        batch_folder = f"{original_folder_name}_{counter}"
-        counter += 1
-    
-    # 创建主文件夹和图片文件夹
-    os.makedirs(batch_folder, exist_ok=True)
-    batch_images_dir = os.path.join(batch_folder, 'images')
-    if save_images:
-        os.makedirs(batch_images_dir, exist_ok=True)
-    
-    print(f"📁 创建输出文件夹: {batch_folder}")
-    if save_images:
-        print(f"📁 创建图片文件夹: {batch_images_dir}")
+        # 如果指定了获取最新的N篇文章
+        if latest_n is not None:
+            filtered_articles = get_latest_n_articles(filtered_articles, latest_n)
+            date_range = f"(最新 {latest_n} 篇)"
 
-    # 提取所有链接
-    urls = []
-    for item in filtered_articles:
-        if 'link' in item:
-            urls.append(item['link'])
-        elif 'url' in item:
-            urls.append(item['url'])
+        print(f"📝 符合条件的文章数量: {len(filtered_articles)} {date_range}")
+        
+        if len(filtered_articles) == 0:
+            print("❌ 没有找到符合条件的文章，跳过此文件")
+            return
+        
+        print(f"\n🚀 开始爬取 {len(filtered_articles)} 篇文章...")
+
+        # 在Output文件夹下创建输出子文件夹
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        list_name = os.path.splitext(os.path.basename(json_file))[0]
+        batch_folder = os.path.join(output_base_dir, f"{list_name}_batch_{timestamp}")
+        
+        # 确保文件夹名称唯一
+        counter = 1
+        original_folder_name = batch_folder
+        while os.path.exists(batch_folder):
+            batch_folder = f"{original_folder_name}_{counter}"
+            counter += 1
+        
+        # 创建主文件夹和图片文件夹
+        os.makedirs(batch_folder, exist_ok=True)
+        if save_images:
+            batch_images_dir = os.path.join(batch_folder, 'images')
+            os.makedirs(batch_images_dir, exist_ok=True)
+        
+        print(f"📁 创建输出文件夹: {batch_folder}")
+        if save_images:
+            print(f"📁 创建图片文件夹: {batch_images_dir}")
+
+        # 提取所有链接
+        urls = []
+        for item in filtered_articles:
+            if 'link' in item:
+                urls.append(item['link'])
+            elif 'url' in item:
+                urls.append(item['url'])
+                
+        # 创建进度管理器和进度文件
+        progress_manager = ProgressManager(batch_folder)
+        progress_manager.create_progress_file(urls)
+        pending_urls = urls
 
     # 批量抓取文章
     articles = []
-    for idx, url in enumerate(urls, 1):
-        print(f"\n[{idx}/{len(urls)}] 正在抓取: {url}")
-        
-        try:
-            # 确保每篇文章都使用正确的图片保存路径
-            article_data = fetch_article_content(url, batch_folder, save_images)
+    try:
+        for idx, url in enumerate(pending_urls, 1):
+            print(f"\n[{idx}/{len(pending_urls)}] 正在抓取: {url}")
             
-            # 添加调试信息（仅在保存图片时显示）
-            if save_images:
-                print(f"    图片保存目录: {batch_images_dir}")
-                print(f"    文章图片数量: {len(article_data.get('images', []))}")
-            
-            articles.append(article_data)
-            
-            # 显示抓取结果
-            if article_data.get('title'):
-                print(f"    ✅ 成功: {article_data['title'][:50]}...")
+            try:
+                # 确保每篇文章都使用正确的图片保存路径
+                article_data = fetch_article_content(url, batch_folder, save_images)
+                
+                # 添加调试信息（仅在保存图片时显示）
                 if save_images and article_data.get('metadata', {}).get('images_saved'):
-                    print(f"       📸 已保存 {article_data.get('metadata', {}).get('image_count', 0)} 张图片")
-            else:
-                print(f"    ❌ 失败: 未获取到标题")
+                    print(f"    图片保存目录: {os.path.join(batch_folder, 'images')}")
+                    print(f"    文章图片数量: {len(article_data.get('images', []))}")
+                
+                articles.append(article_data)
+                
+                # 显示抓取结果
+                if article_data.get('title'):
+                    print(f"    ✅ 成功: {article_data['title'][:50]}...")
+                    progress_manager.update_progress(url, 'completed')
+                    if save_images and article_data.get('metadata', {}).get('images_saved'):
+                        print(f"       📸 已保存 {article_data.get('metadata', {}).get('image_count', 0)} 张图片")
+                else:
+                    print(f"    ❌ 失败: 未获取到标题")
+                    progress_manager.update_progress(url, 'failed', "未获取到标题")
+                
+            except Exception as e:
+                print(f"    ❌ 抓取异常: {e}")
+                progress_manager.update_progress(url, 'failed', str(e))
+                articles.append({
+                    'url': url,
+                    'title': '',
+                    'author': '',
+                    'publish_time': '',
+                    'read_count': '',
+                    'like_count': '',
+                    'content': '',
+                    'summary': '',
+                    'error': str(e),
+                    'content_format': 'plain',
+                    'images': [],
+                    'metadata': {
+                        'crawl_time': datetime.now().isoformat(),
+                        'markdown_enabled': False,
+                        'images_saved': False,
+                        'image_count': 0,
+                        'version': '1.0'
+                    }
+                })
             
-        except Exception as e:
-            print(f"    ❌ 抓取异常: {e}")
-            articles.append({
-                'url': url,
-                'title': '',
-                'author': '',
-                'publish_time': '',
-                'read_count': '',
-                'like_count': '',
-                'content': '',
-                'summary': '',
-                'error': str(e),
-                'content_format': 'plain',
-                'images': [],
-                'metadata': {
-                    'crawl_time': datetime.now().isoformat(),
-                    'markdown_enabled': False,
-                    'images_saved': False,
-                    'image_count': 0,
-                    'version': '1.0'
-                }
-            })
-        
-        # 检查图片文件夹（仅在保存图片时）
-        if save_images and os.path.exists(batch_images_dir):
-            image_files = os.listdir(batch_images_dir)
-            print(f"    📁 图片文件夹状态: {len(image_files)} 个文件")
-        
-        # 防止过快被封，每次抓取间隔 5 秒
-        time.sleep(5)
+            # 检查图片文件夹（仅在保存图片时）
+            if save_images:
+                images_dir = os.path.join(batch_folder, 'images')
+                if os.path.exists(images_dir):
+                    image_files = os.listdir(images_dir)
+                    print(f"    📁 图片文件夹状态: {len(image_files)} 个文件")
+            
+            # 防止过快被封，每次抓取间隔 5 秒
+            time.sleep(5)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 检测到用户中断，正在保存当前进度...")
+        # 保存当前结果
+        output_file = os.path.join(batch_folder, "articles_detailed.json")
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(articles, f, ensure_ascii=False, indent=2)
+        print(f"✅ 已保存当前进度到: {output_file}")
+        print("👉 下次运行时将自动继续未完成的文章")
+        return
 
     # 保存结果文件
     output_file = os.path.join(batch_folder, "articles_detailed.json")
@@ -160,7 +200,7 @@ def process_single_list(json_file: str, output_base_dir: str,
     info_file = os.path.join(batch_folder, "crawl_info.json")
     crawl_info = {
         "crawl_time": datetime.now().isoformat(),
-        "time_range": date_range,
+        "time_range": date_range if not resume_batch else "续传批次",
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "total_articles": len(articles),
@@ -187,6 +227,23 @@ def process_single_list(json_file: str, output_base_dir: str,
 def main():
     print("微信公众号文章批量抓取工具 (JSON 版)")
     print("从 ArticleList 文件夹读取文章列表并批量抓取")
+    
+    # 检查是否有未完成的批次
+    incomplete_batch = find_incomplete_batch()
+    if incomplete_batch:
+        print("\n⚠️ 检测到有未完成的批次:")
+        print(f"📁 {os.path.basename(incomplete_batch)}")
+        
+        while True:
+            choice = input("\n是否继续上次未完成的爬取? (y/n): ").strip().lower()
+            if choice in ['y', 'n']:
+                break
+            print("❌ 无效输入，请重新选择")
+        
+        if choice == 'y':
+            # 继续上次的批次
+            process_single_list(None, None, resume_batch=incomplete_batch)
+            return
     
     # 检查必要的文件夹
     article_list_dir = os.path.join(os.path.dirname(__file__), "ArticleList")
